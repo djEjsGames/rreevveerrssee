@@ -1,4 +1,28 @@
-# Godot 4+ specific ignores
+# OS/editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# LOVE build outputs
+/dist/
+/web/
+/web-play/
+*.love
+*.zip
+
+# Local caches
+.npm-cache/
+node_modules/
+
+# Local backups/temp
+/Backups/
+*.bak
+*.tmp
+
+# Old Godot leftovers
 .godot/
 /android/
-.npm-cache/
