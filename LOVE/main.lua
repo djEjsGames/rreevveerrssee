@@ -64,9 +64,12 @@ local ctx = {
 	question_i = 0,
 	doremi_i = 0,
 	briefing_lines = {
-		"...",
-		"내 지시를 반대로 이해하고 움직여야 해",
-		"좀 더 서두르도록",
+		{ speaker = "Sagume", text = "..." },
+		{ speaker = "Sagume", text = "내 지시를 반대로 이해하고 움직여야 해" },
+		{ speaker = "Sagume", text = "좀 더 서두르도록" },
+		{ speaker = "Doremi", text = "사구메가 말한 내용은 반대로 받아들이면 돼." },
+		{ speaker = "Doremi", text = "침착하게 위치를 다시 확인해." },
+		{ speaker = "Doremi", text = "이건 꿈이 아니니까 조심해." },
 	},
 	interference_lines = {
 		"방해하려고? 시시하네~",
@@ -105,6 +108,7 @@ local function sagume_say(text)
 end
 
 local function doremi_say(text)
+	ctx.sagume_location_timer = 30
 	ui.start_briefing(ctx, "top", text, "Doremi")
 end
 
@@ -198,16 +202,16 @@ local function supply_room_line()
 end
 
 local function trigger_sagume_default_briefing()
-	ctx.briefing_i = ctx.briefing_i % 3 + 1
-	sagume_say(ctx.briefing_lines[ctx.briefing_i])
+	ctx.briefing_i = ctx.briefing_i % #ctx.briefing_lines + 1
+	local line = ctx.briefing_lines[ctx.briefing_i]
+	if line.speaker == "Doremi" then
+		doremi_say(line.text)
+	else
+		sagume_say(line.text)
+	end
 end
 
 local function ask_sagume()
-	if ctx.sagume_call_cd > 0 then
-		ctx.state.prompt = ("Sagume cooldown %.1fs"):format(ctx.sagume_call_cd)
-		return
-	end
-	ctx.sagume_call_cd = 3
 	ctx.question_i = ctx.question_i % 5 + 1
 	local lines = { seija_player_line, seija_room_line, supply_player_line, supply_room_line, function() return "내 지시는 반대로 받아들여" end }
 	sagume_say(lines[ctx.question_i]())
@@ -226,6 +230,19 @@ local function ask_doremi()
 		function() return ("사구메가 말한걸 해석하면 %s는 네 위치를 기준으로 %s에 있을거야"):format(target, actual_player_direction(ctx.seija.x, ctx.seija.y)) end,
 	}
 	doremi_say(lines[ctx.doremi_i]())
+end
+
+local function ask_briefing()
+	if ctx.sagume_call_cd > 0 then
+		ctx.state.prompt = ("Briefing cooldown %.1fs"):format(ctx.sagume_call_cd)
+		return
+	end
+	ctx.sagume_call_cd = 3
+	if (ctx.question_i + ctx.doremi_i) % 2 == 0 then
+		ask_sagume()
+	else
+		ask_doremi()
+	end
 end
 
 local function screen_to_world(x, y, basis)
@@ -399,10 +416,7 @@ end
 function love.keypressed(key)
 	if key == "space" and not ctx.suika_event and ctx.player.groggy == 0 then movement.start_dash(ctx, screen_input(movement.input())) end
 	if key == "b" then
-		ask_sagume()
-	end
-	if key == "c" then
-		ask_doremi()
+		ask_briefing()
 	end
 	if key == "n" then
 		ui.trigger_minimap_interference(ctx)
@@ -410,7 +424,7 @@ function love.keypressed(key)
 	if key == "g" then ctx.settings.distort_mode = ctx.settings.distort_mode == "wave" and "swirl" or "wave" end
 	if key == "v" then ctx.settings.fade_mode = ctx.settings.fade_mode % #ctx.fade_modes + 1 end
 	if key == "r" then reset_run() end
-	if key == "f1" then ctx.help_popup = 5 end
+	if key == "h" then ctx.help_popup = 5 end
 end
 
 function love.draw()

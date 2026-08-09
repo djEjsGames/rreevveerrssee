@@ -306,6 +306,8 @@ function ui.draw_order_panel(ctx)
 	if ctx.state.cleared then
 		love.graphics.line(ctx.PANEL_X + 48, 365 + #ctx.objectives * 46, ctx.PANEL_X + 48 + font:getWidth("Capture Seija"), 365 + #ctx.objectives * 46)
 	end
+	love.graphics.setColor(0.62, 0.65, 0.68)
+	love.graphics.print("H: Help", ctx.PANEL_X + 20, ctx.H - 30)
 end
 
 function ui.draw_help_popup(ctx)
@@ -318,11 +320,10 @@ function ui.draw_help_popup(ctx)
 	love.graphics.setColor(0.7, 0.74, 0.78, alpha)
 	love.graphics.rectangle("line", x, y, w, h, 6, 6)
 	love.graphics.print("Controls", x + 14, y + 12)
-	love.graphics.print("WASD: move    Mouse: aim", x + 14, y + 38)
-	love.graphics.print("Space: step dash", x + 14, y + 62)
-	love.graphics.print("B: ask Sagume    C: Doremi", x + 14, y + 86)
-	love.graphics.print("G/V: test toggles", x + 14, y + 110)
-	love.graphics.print("R: new map", x + 14, y + 132)
+	love.graphics.print("WASD: 이동    마우스: 시야", x + 14, y + 38)
+	love.graphics.print("스페이스: 스텝 대시", x + 14, y + 62)
+	love.graphics.print("B: 브리핑 호출", x + 14, y + 86)
+	love.graphics.print("H: 도움말    R: 새 맵", x + 14, y + 110)
 end
 
 function ui.draw_briefing(ctx)
