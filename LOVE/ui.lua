@@ -193,6 +193,22 @@ function ui.update_minimap_fx(ctx, dt)
 	end
 end
 
+function ui.reset_minimap_fx(ctx)
+	local current = current_minimap_fx(ctx.minimap_fx.map)
+	ctx.minimap_fx = {
+		map = {
+			rot = current.rot,
+			sx = current.sx,
+			sy = current.sy,
+			mode = "reset",
+			from = { rot = current.rot, sx = current.sx, sy = current.sy },
+			to = { rot = 0, sx = 1, sy = 1 },
+			time = 0,
+			duration = 1.0,
+		},
+	}
+end
+
 function ui.trigger_minimap_interference(ctx, forced)
 	ctx.minimap_interference_timer = 20
 	local rotations = { -2, -1, 1, 2 }

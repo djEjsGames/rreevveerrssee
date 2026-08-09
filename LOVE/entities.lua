@@ -78,10 +78,10 @@ local function add_ice(ctx, tx, ty, spread_left)
 	if map.wall_tile_at(ctx, tx, ty) then return end
 	local key = tx .. "," .. ty
 	if ctx.ice_by_key[key] then
-		ctx.ice_by_key[key].time = 3
+		ctx.ice_by_key[key].time = 2
 		return
 	end
-	local ice = { tx = tx, ty = ty, time = 3, spread = spread_left and 1 or 0, spread_left = spread_left or 0 }
+	local ice = { tx = tx, ty = ty, time = 2, age = 0, spread = spread_left and 0.5 or 0, spread_left = spread_left or 0 }
 	ctx.ice_by_key[key] = ice
 	ctx.ice_tiles[#ctx.ice_tiles + 1] = ice
 end
@@ -271,6 +271,7 @@ function entities.update_supplies(ctx, dt)
 				ctx.state.prompt = "Input restored."
 			elseif supply.kind == "unrotate" then
 				effects.reset_view_rotation(ctx)
+				ui.reset_minimap_fx(ctx)
 				ctx.state.prompt = "View direction restored."
 			end
 			remove_supply_group(ctx, supply.group)
@@ -344,6 +345,7 @@ end
 function entities.update_ice(ctx, dt)
 	for i = #ctx.ice_tiles, 1, -1 do
 		local ice = ctx.ice_tiles[i]
+		ice.age = ice.age + dt
 		ice.time = ice.time - dt
 		if ice.spread_left > 0 then
 			ice.spread = ice.spread - dt
@@ -352,6 +354,7 @@ function entities.update_ice(ctx, dt)
 				ice.spread_left = 0
 				for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
 					add_ice(ctx, ice.tx + d[1], ice.ty + d[2], next_spread)
+					add_ice(ctx, ice.tx + d[1] * 2, ice.ty + d[2] * 2, next_spread)
 				end
 			end
 		end

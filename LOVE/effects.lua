@@ -135,10 +135,12 @@ end
 function effects.reset_view_rotation(ctx)
 	local fx = ctx.screen_fx
 	finish_screen_tween(fx)
-	fx.from_rot = fx.rot or 0
-	fx.to_rot = 0
-	fx.rot_time, fx.rot_duration = 0, 1.0
-	fx.basis_target = { rot = 0, sx = ctx.view_basis.sx, sy = ctx.view_basis.sy }
+	fx.diag_flip, fx.diag_axis = nil, nil
+	fx.from_rot, fx.from_sx, fx.from_sy = fx.rot or 0, fx.sx or 1, fx.sy or 1
+	fx.to_rot, fx.to_sx, fx.to_sy = 0, 1, 1
+	fx.rot_time, fx.time, fx.rot_duration, fx.duration = 0, 0, 1.0, 1.0
+	fx.basis_target = { rot = 0, sx = 1, sy = 1 }
+	fx.basis_committed = false
 	fx.flash = 0.7
 	fx.label = "VIEW RESET"
 	effects.play_sound(ctx, "cleansing")
@@ -212,7 +214,7 @@ function effects.load(ctx)
 	if love.filesystem.getInfo("Audio/BGM/BGM1.mp3") then
 		ctx.bgm = love.audio.newSource("Audio/BGM/BGM1.mp3", "stream")
 		ctx.bgm:setLooping(true)
-		ctx.bgm:setVolume(0.45)
+		ctx.bgm:setVolume(0.36)
 		ctx.bgm:play()
 	end
 end

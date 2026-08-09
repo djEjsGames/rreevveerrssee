@@ -626,7 +626,7 @@ function love.draw()
 	love.graphics.polygon("fill", vision.near_sight_polygon(ctx))
 
 	for _, ice in ipairs(ctx.ice_tiles) do
-		local alpha = math.min(0.5, ice.time / 3 * 0.5)
+		local alpha = math.min(0.5, ice.time / 2 * 0.5) * math.min(1, (ice.age or 0) / 0.1)
 		love.graphics.setColor(0.42, 0.86, 1.0, alpha)
 		love.graphics.rectangle("fill", (ice.tx - 1) * ctx.TILE, (ice.ty - 1) * ctx.TILE, ctx.TILE, ctx.TILE)
 		love.graphics.setColor(0.72, 0.95, 1.0, alpha)
