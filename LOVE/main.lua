@@ -74,6 +74,7 @@ local ctx = {
 	interference_i = 0,
 	question_i = 0,
 	doremi_i = 0,
+	briefing_request_i = 0,
 	briefing_lines = {
 		{ speaker = "Sagume", text = "..." },
 		{ speaker = "Sagume", text = "내 지시를 반대로 이해하고 움직여야 해" },
@@ -113,6 +114,7 @@ local function reset_run()
 	ctx.full_map_open = false
 	ctx.debug_npc_map = false
 	ctx.briefing_menu = nil
+	ctx.briefing_request_i = 0
 	ctx.status_popup = { text = "", time = 3, duration = 3 }
 	ctx.last_status_text = ""
 	ctx.suika_event = nil
@@ -283,7 +285,12 @@ local function ask_briefing()
 		return
 	end
 	ctx.sagume_call_cd = 3
-	ask_sagume()
+	ctx.briefing_request_i = (ctx.briefing_request_i or 0) + 1
+	if ctx.briefing_request_i % 2 == 0 then
+		ask_doremi()
+	else
+		ask_sagume()
+	end
 end
 
 local function request_briefing(kind)
@@ -608,10 +615,15 @@ function love.draw()
 	effects.apply_screen_fx(ctx)
 	love.graphics.translate(-ctx.camera.x, -ctx.camera.y)
 
-	local first_x = math.max(1, math.floor(ctx.camera.x / ctx.TILE) + 1)
-	local last_x = math.min(ctx.MAP_W, math.floor((ctx.camera.x + ctx.VIEW_W) / ctx.TILE) + 2)
-	local first_y = math.max(1, math.floor(ctx.camera.y / ctx.TILE) + 1)
-	local last_y = math.min(ctx.MAP_H, math.floor((ctx.camera.y + ctx.H) / ctx.TILE) + 2)
+	local cull_c, cull_s = math.abs(math.cos(ctx.screen_fx.rot or 0)), math.abs(math.sin(ctx.screen_fx.rot or 0))
+	local cull_w = ctx.VIEW_W * cull_c + ctx.H * cull_s
+	local cull_h = ctx.VIEW_W * cull_s + ctx.H * cull_c
+	local cull_pad_x = math.max(0, (cull_w - ctx.VIEW_W) / 2)
+	local cull_pad_y = math.max(0, (cull_h - ctx.H) / 2)
+	local first_x = math.max(1, math.floor((ctx.camera.x - cull_pad_x) / ctx.TILE) + 1)
+	local last_x = math.min(ctx.MAP_W, math.floor((ctx.camera.x + ctx.VIEW_W + cull_pad_x) / ctx.TILE) + 2)
+	local first_y = math.max(1, math.floor((ctx.camera.y - cull_pad_y) / ctx.TILE) + 1)
+	local last_y = math.min(ctx.MAP_H, math.floor((ctx.camera.y + ctx.H + cull_pad_y) / ctx.TILE) + 2)
 	for y = first_y, last_y do
 		for x = first_x, last_x do
 			if ctx.map[y][x] == 1 then

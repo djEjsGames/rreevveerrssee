@@ -25,6 +25,19 @@ vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc)
 }
 ]]
 
+local night_blind_code = [[
+extern vec2 center;
+extern number inner_radius;
+extern number outer_radius;
+extern number alpha;
+vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc)
+{
+	float d = distance(sc, center);
+	float a = smoothstep(inner_radius, outer_radius, d) * alpha;
+	return vec4(0.0, 0.0, 0.0, a);
+}
+]]
+
 function effects.out_quint(t)
 	return 1 - (1 - t) ^ 5
 end
@@ -205,6 +218,7 @@ function effects.load(ctx)
 	ctx.flip_canvas = love.graphics.newCanvas(flip_size, flip_size)
 	ctx.flip_size = flip_size
 	ctx.distort_shader = love.graphics.newShader(distort_code)
+	ctx.night_blind_shader = love.graphics.newShader(night_blind_code)
 	ctx.sounds = {
 		drunken = love.filesystem.getInfo("Audio/Effect/Drunken.mp3") and love.audio.newSource("Audio/Effect/Drunken.mp3", "static") or nil,
 		spin = love.filesystem.getInfo("Audio/Effect/Spin.mp3") and love.audio.newSource("Audio/Effect/Spin.mp3", "static") or nil,
@@ -282,14 +296,15 @@ function effects.draw_dark_overlay(ctx)
 		local fx = ctx.night_blind_fx
 		local t = math.min(1, fx.time / 1.4)
 		local fade = math.min(1, (fx.duration - fx.time) / 1.0)
-		local w = math.max(70, ctx.VIEW_W * (0.58 - 0.34 * effects.out_quint(t)))
-		local h = math.max(58, ctx.H * (0.58 - 0.34 * effects.out_quint(t)))
-		local x, y = (ctx.VIEW_W - w) / 2, (ctx.H - h) / 2
-		love.graphics.setColor(0, 0, 0, 0.72 * fade)
-		love.graphics.rectangle("fill", 0, 0, ctx.VIEW_W, y)
-		love.graphics.rectangle("fill", 0, y + h, ctx.VIEW_W, ctx.H - y - h)
-		love.graphics.rectangle("fill", 0, y, x, h)
-		love.graphics.rectangle("fill", x + w, y, ctx.VIEW_W - x - w, h)
+		local r = math.max(84, math.max(ctx.VIEW_W, ctx.H) * (0.52 - 0.32 * effects.out_quint(t)))
+		ctx.night_blind_shader:send("center", { ctx.VIEW_W / 2, ctx.H / 2 })
+		ctx.night_blind_shader:send("inner_radius", r * 0.58)
+		ctx.night_blind_shader:send("outer_radius", r)
+		ctx.night_blind_shader:send("alpha", 0.78 * fade)
+		love.graphics.setShader(ctx.night_blind_shader)
+		love.graphics.setColor(1, 1, 1, 1)
+		love.graphics.rectangle("fill", 0, 0, ctx.VIEW_W, ctx.H)
+		love.graphics.setShader()
 	end
 	if ctx.rumia_dark_fx then
 		local fx = ctx.rumia_dark_fx

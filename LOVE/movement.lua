@@ -66,8 +66,8 @@ local function move_player_by(ctx, dx, dy)
 				step_y = rel_y > 0 and ctx.TILE or -ctx.TILE
 			end
 			if (step_x ~= 0 or step_y ~= 0) and not movement.blocked_at(ctx, cube.x + step_x, cube.y + step_y, cube.r, cube) then
-				cube.move = { from_x = cube.x, from_y = cube.y, to_x = cube.x + step_x, to_y = cube.y + step_y, time = 0, duration = 0.5 }
-				cube.push_cd = 0.5
+				cube.move = { from_x = cube.x, from_y = cube.y, to_x = cube.x + step_x, to_y = cube.y + step_y, time = 0, duration = 0.1 }
+				cube.push_cd = 0.1
 				movement.clear_mob_paths(ctx)
 			end
 		end

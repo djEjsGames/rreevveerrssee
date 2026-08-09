@@ -95,6 +95,7 @@ local function spawn_cirno_ice(ctx, mob)
 end
 
 local function start_suika_collision(ctx, mob)
+	ui.start_briefing(ctx, "top", "한잔 해~", "Suika")
 	ctx.suika_event = {
 		mob = mob,
 		time = 0,
@@ -110,16 +111,31 @@ local function start_suika_collision(ctx, mob)
 end
 
 local function add_cube(ctx)
-	local point = map.random_room_point(ctx)
+	local function snap(point)
+		return {
+			x = math.floor(point.x / ctx.TILE + 0.5) * ctx.TILE,
+			y = math.floor(point.y / ctx.TILE + 0.5) * ctx.TILE,
+		}
+	end
+	local function fits(point)
+		local tx, ty = math.floor(point.x / ctx.TILE), math.floor(point.y / ctx.TILE)
+		for y = ty, ty + 1 do
+			for x = tx, tx + 1 do
+				if map.wall_tile_at(ctx, x, y) then return false end
+			end
+		end
+		return true
+	end
+	local point = snap(map.random_room_point(ctx))
 	for _ = 1, 200 do
-		local ok = ((point.x - ctx.player.x) ^ 2 + (point.y - ctx.player.y) ^ 2) ^ 0.5 > ctx.TILE * 3
+		local ok = fits(point) and ((point.x - ctx.player.x) ^ 2 + (point.y - ctx.player.y) ^ 2) ^ 0.5 > ctx.TILE * 3
 		for _, cube in ipairs(ctx.cubes) do
 			if ((point.x - cube.x) ^ 2 + (point.y - cube.y) ^ 2) ^ 0.5 < ctx.TILE * 2 then ok = false break end
 		end
 		if ok then break end
-		point = map.random_room_point(ctx)
+		point = snap(map.random_room_point(ctx))
 	end
-	ctx.cubes[#ctx.cubes + 1] = { x = point.x, y = point.y, r = 15, alpha = 0, push_cd = 0, move = nil }
+	ctx.cubes[#ctx.cubes + 1] = { x = point.x, y = point.y, r = ctx.TILE, alpha = 0, push_cd = 0, move = nil }
 end
 
 local function point_dir(ctx, point)
@@ -333,9 +349,11 @@ function entities.update_mobs(ctx, dt)
 				start_suika_collision(ctx, mob)
 			elseif mob.type == "mystia" then
 				effects.start_night_blind_fx(ctx)
+				ui.start_briefing(ctx, "top", "칠성장어가 야맹증에 좋대~", "Mystia")
 				mob.cd = 8
 			elseif mob.type == "rumia" then
 				effects.start_rumia_dark_fx(ctx)
+				ui.start_briefing(ctx, "top", "그-런건-가-", "Rumia")
 				mob.cd = 8
 			end
 		end

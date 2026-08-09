@@ -516,7 +516,8 @@ function ui.draw_briefing(ctx)
 	if not ctx.briefings then return end
 	for i = #ctx.briefings, 1, -1 do
 	local briefing = ctx.briefings[i]
-	local image = briefing.speaker == "Doremi" and ctx.doremi_image or ctx.sagume_image
+	local image = (ctx.actor_images and ctx.actor_images[string.lower(briefing.speaker or "")])
+		or (briefing.speaker == "Doremi" and ctx.doremi_image or ctx.sagume_image)
 	if image then
 	local alpha = 1
 	if briefing.time > briefing.duration - briefing.out_time then
