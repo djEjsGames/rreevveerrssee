@@ -20,5 +20,11 @@ $dataName = "game-$hash.data"
 Rename-Item -LiteralPath $data -NewName $dataName
 $gameJs = Join-Path $pages "game.js"
 (Get-Content -LiteralPath $gameJs -Raw).Replace("game.data", $dataName) | Set-Content -LiteralPath $gameJs -NoNewline
+$info = [ordered]@{
+	data_file = $dataName
+	data_bytes = (Get-Item -LiteralPath (Join-Path $pages $dataName)).Length
+	love_sha256 = (Get-FileHash -LiteralPath (Join-Path $root "dist\rreevveerrssee-prototype.love") -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $pages "build-info.json") -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $pages ".nojekyll") -Value ""
 Write-Output "Created GitHub Pages build in $pages"
