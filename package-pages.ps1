@@ -14,5 +14,11 @@ npx -y -p love.js love.js.cmd (Join-Path $root "dist\rreevveerrssee-prototype.lo
 if ($LASTEXITCODE -ne 0) {
 	exit $LASTEXITCODE
 }
+$data = Join-Path $pages "game.data"
+$hash = (Get-FileHash -LiteralPath $data -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
+$dataName = "game-$hash.data"
+Rename-Item -LiteralPath $data -NewName $dataName
+$gameJs = Join-Path $pages "game.js"
+(Get-Content -LiteralPath $gameJs -Raw).Replace("game.data", $dataName) | Set-Content -LiteralPath $gameJs -NoNewline
 Set-Content -LiteralPath (Join-Path $pages ".nojekyll") -Value ""
 Write-Output "Created GitHub Pages build in $pages"
