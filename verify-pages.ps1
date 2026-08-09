@@ -16,6 +16,10 @@ $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
 $cacheBust = [Uri]::EscapeDataString($info.love_sha256.Substring(0, 12))
 $remoteInfo = Invoke-RestMethod -Uri "$BaseUrl/build-info.json?v=$cacheBust"
 
+if (-not $remoteInfo.love_sha256) {
+	throw "Pages is stale. build-info.json is not deployed yet."
+}
+
 if ($remoteInfo.love_sha256 -ne $info.love_sha256) {
 	throw "Pages is stale. local=$($info.love_sha256) remote=$($remoteInfo.love_sha256)"
 }
