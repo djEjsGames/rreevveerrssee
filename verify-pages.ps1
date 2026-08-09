@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
 	[string]$BaseUrl = "https://djejsgames.github.io/rreevveerrssee"
 )
+
+$ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pages = Join-Path $root "docs"
