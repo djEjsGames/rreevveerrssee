@@ -33,30 +33,23 @@ local function block_tile(ctx, x, y)
 	if ctx.map[y] and ctx.map[y][x] ~= nil then ctx.map[y][x] = 1 end
 end
 
-local function fill_room(ctx, room)
-	for y = room.y, room.y + room.h - 1 do
-		for x = room.x, room.x + room.w - 1 do block_tile(ctx, x, y) end
-	end
+local function carve_center_layout(ctx, room)
+	carve_room(ctx, room)
 end
 
-local function carve_center_layout(ctx, room)
-	local cx, cy = room.x + math.floor(room.w / 2), room.y + math.floor(room.h / 2)
-	fill_room(ctx, room)
-	local rooms = {
-		{ x = cx - 4, y = cy - 4, w = 8, h = 8 },
-		{ x = cx - 4, y = room.y + 2, w = 8, h = 6 },
-		{ x = cx - 4, y = room.y + room.h - 8, w = 8, h = 6 },
-		{ x = room.x + 2, y = cy - 4, w = 7, h = 8 },
-		{ x = room.x + room.w - 9, y = cy - 4, w = 7, h = 8 },
-		{ x = room.x + 3, y = room.y + 3, w = 6, h = 6 },
-		{ x = room.x + room.w - 9, y = room.y + 3, w = 6, h = 6 },
-		{ x = room.x + 3, y = room.y + room.h - 9, w = 6, h = 6 },
-		{ x = room.x + room.w - 9, y = room.y + room.h - 9, w = 6, h = 6 },
-	}
-	for _, r in ipairs(rooms) do carve_room(ctx, r) end
-	for _, r in ipairs(rooms) do
-		carve_hall(ctx, { x = cx, y = cy }, { x = r.x + math.floor(r.w / 2), y = r.y + math.floor(r.h / 2) })
+local function overlaps_room(room, rooms, padding)
+	padding = padding or 2
+	for _, other in ipairs(rooms) do
+		if room.x < other.x + other.w + padding and room.x + room.w + padding > other.x
+			and room.y < other.y + other.h + padding and room.y + room.h + padding > other.y then
+			return true
+		end
 	end
+	return false
+end
+
+local function room_center(room)
+	return { x = room.x + math.floor(room.w / 2), y = room.y + math.floor(room.h / 2) }
 end
 
 function mapmod.tile_of(ctx, x, y)
@@ -184,42 +177,106 @@ function mapmod.generate(ctx)
 		for x = 1, ctx.MAP_W do ctx.map[y][x] = 1 end
 	end
 
-	local center = { id = 5, x = 31, y = 18, w = 30, h = 30, template = "center" }
+	local mid_x, mid_y = math.floor(ctx.MAP_W / 2), math.floor(ctx.MAP_H / 2)
+	local center = { id = 5, x = mid_x - 5, y = mid_y - 5, w = 10, h = 10, template = "center" }
 	ctx.rooms[5] = center
 	carve_center_layout(ctx, center)
 
-	local function make_room(id, gx, gy, template)
-		local size = 12 + math.random(0, 3)
-		local center_x = gx < 0 and 16 or gx > 0 and 76 or 46
-		local center_y = gy < 0 and 8 or gy > 0 and 56 or 33
+	local function add_room(id, center_x, center_y, w, h, template)
 		local room = {
 			id = id,
-			x = math.max(2, math.min(ctx.MAP_W - size - 1, center_x - math.floor(size / 2))),
-			y = math.max(2, math.min(ctx.MAP_H - size - 1, center_y - math.floor(size / 2))),
-			w = size,
-			h = size,
+			x = math.max(2, math.min(ctx.MAP_W - w - 1, center_x - math.floor(w / 2))),
+			y = math.max(2, math.min(ctx.MAP_H - h - 1, center_y - math.floor(h / 2))),
+			w = w,
+			h = h,
 			template = template,
 		}
 		ctx.rooms[id] = room
 		carve_room(ctx, room)
+		return room
 	end
 
-	make_room(1, -1, -1, "corner")
-	make_room(2, 0, -1, "cardinal")
-	make_room(3, 1, -1, "corner")
-	make_room(4, -1, 0, "cardinal")
-	make_room(6, 1, 0, "cardinal")
-	make_room(7, -1, 1, "corner")
-	make_room(8, 0, 1, "cardinal")
-	make_room(9, 1, 1, "corner")
-
-	for _, id in ipairs({ 1, 2, 3, 4, 6, 7, 8, 9 }) do
-		local room = ctx.rooms[id]
-		carve_hall(ctx, { x = center.x + math.floor(center.w / 2), y = center.y + math.floor(center.h / 2) }, { x = room.x + math.floor(room.w / 2), y = room.y + math.floor(room.h / 2) })
+	local required = {
+		{ 1, 66, 44, 22, 22, "corner" },
+		{ 2, mid_x, 34, 18, 18, "cardinal" },
+		{ 3, ctx.MAP_W - 66, 44, 22, 22, "corner" },
+		{ 4, 62, mid_y, 22, 18, "cardinal" },
+		{ 6, ctx.MAP_W - 62, mid_y, 22, 18, "cardinal" },
+		{ 7, 66, ctx.MAP_H - 44, 22, 22, "corner" },
+		{ 8, mid_x, ctx.MAP_H - 34, 18, 18, "cardinal" },
+		{ 9, ctx.MAP_W - 66, ctx.MAP_H - 44, 22, 22, "corner" },
+	}
+	for _, r in ipairs(required) do
+		add_room(r[1], r[2], r[3], r[4] + math.random(0, 4), r[5] + math.random(0, 4), r[6])
 	end
 
-	ctx.player.x = (ctx.rooms[5].x + math.floor(ctx.rooms[5].w / 2)) * ctx.TILE
-	ctx.player.y = (ctx.rooms[5].y + math.floor(ctx.rooms[5].h / 2)) * ctx.TILE
+	local next_id = 10
+	local outer_candidates = {
+		{ 26, 24 }, { mid_x, 22 }, { ctx.MAP_W - 26, 24 },
+		{ 24, mid_y }, { ctx.MAP_W - 24, mid_y },
+		{ 26, ctx.MAP_H - 24 }, { mid_x, ctx.MAP_H - 22 }, { ctx.MAP_W - 26, ctx.MAP_H - 24 },
+		{ mid_x, mid_y },
+	}
+	for i = #outer_candidates, 2, -1 do
+		local j = math.random(i)
+		outer_candidates[i], outer_candidates[j] = outer_candidates[j], outer_candidates[i]
+	end
+	local outer_count = math.random(4, 7)
+	for i = 1, outer_count do
+		local p = outer_candidates[i]
+		local w, h = 18 + math.random(0, 8), 18 + math.random(0, 8)
+		local room = { x = math.max(2, math.min(ctx.MAP_W - w - 1, p[1] - math.floor(w / 2))), y = math.max(2, math.min(ctx.MAP_H - h - 1, p[2] - math.floor(h / 2))), w = w, h = h }
+		if not overlaps_room(room, ctx.rooms, 4) then
+			add_room(next_id, p[1], p[2], w, h, "outer")
+			next_id = next_id + 1
+		end
+	end
+
+	for _ = 1, 130 do
+		if next_id > 48 then break end
+		local w, h = math.random(7, 16), math.random(6, 14)
+		local x, y = math.random(34, ctx.MAP_W - 34 - w), math.random(28, ctx.MAP_H - 28 - h)
+		local room = { id = next_id, x = x, y = y, w = w, h = h, template = "fill" }
+		if not overlaps_room(room, ctx.rooms, 3) then
+			ctx.rooms[next_id] = room
+			carve_room(ctx, room)
+			next_id = next_id + 1
+		end
+	end
+
+	local connected = { center }
+	for _, room in ipairs(ctx.rooms) do
+		if room.id ~= 5 then
+			local nearest = connected[1]
+			local rc = room_center(room)
+			local best = math.huge
+			for _, other in ipairs(connected) do
+				local oc = room_center(other)
+				local d = (rc.x - oc.x) ^ 2 + (rc.y - oc.y) ^ 2
+				if d < best then
+					best, nearest = d, other
+				end
+			end
+			carve_hall(ctx, room_center(nearest), rc)
+			connected[#connected + 1] = room
+		end
+	end
+
+	local links = {}
+	for i = 1, #ctx.rooms - 1 do
+		for j = i + 1, #ctx.rooms do
+			local a, b = ctx.rooms[i], ctx.rooms[j]
+			local ac, bc = room_center(a), room_center(b)
+			links[#links + 1] = { a = a, b = b, d = (ac.x - bc.x) ^ 2 + (ac.y - bc.y) ^ 2 }
+		end
+	end
+	table.sort(links, function(a, b) return a.d < b.d end)
+	for i = 1, math.min(18, #links) do
+		carve_hall(ctx, room_center(links[i].a), room_center(links[i].b))
+	end
+
+	ctx.player.x = (center.x + math.floor(center.w / 2)) * ctx.TILE
+	ctx.player.y = (center.y + math.floor(center.h / 2)) * ctx.TILE
 end
 
 return mapmod

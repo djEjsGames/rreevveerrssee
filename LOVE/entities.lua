@@ -14,9 +14,10 @@ local supply_types = {
 	{ kind = "unrotate", icon = "R", color = { 1.0, 0.58, 0.25 } },
 }
 local mob_types = {
-	{ name = "Suika", type = "suika", color = { 1.0, 0.68, 0.22 }, speed = 80 },
-	{ name = "Mystia", type = "mystia", color = { 0.45, 0.55, 1.0 }, speed = 95 },
-	{ name = "Rumia", type = "rumia", color = { 0.5, 0.45, 0.62 }, speed = 90 },
+	{ name = "Suika", type = "suika", color = { 1.0, 0.68, 0.22 }, speed = 160 },
+	{ name = "Mystia", type = "mystia", color = { 0.45, 0.55, 1.0 }, speed = 190 },
+	{ name = "Rumia", type = "rumia", color = { 0.5, 0.45, 0.62 }, speed = 180 },
+	{ name = "Cirno", type = "cirno", color = { 0.35, 0.85, 1.0 }, speed = 200 },
 }
 local opposite_dir = {
 	east = "west", west = "east", north = "south", south = "north",
@@ -73,6 +74,26 @@ local function add_mob(ctx, info)
 	}
 end
 
+local function add_ice(ctx, tx, ty, spread_left)
+	if map.wall_tile_at(ctx, tx, ty) then return end
+	local key = tx .. "," .. ty
+	if ctx.ice_by_key[key] then
+		ctx.ice_by_key[key].time = 3
+		return
+	end
+	local ice = { tx = tx, ty = ty, time = 3, spread = spread_left and 1 or 0, spread_left = spread_left or 0 }
+	ctx.ice_by_key[key] = ice
+	ctx.ice_tiles[#ctx.ice_tiles + 1] = ice
+end
+
+local function spawn_cirno_ice(ctx, mob)
+	local tx, ty = map.tile_of(ctx, mob.x, mob.y)
+	if tx ~= mob.last_ice_tx or ty ~= mob.last_ice_ty then
+		mob.last_ice_tx, mob.last_ice_ty = tx, ty
+		add_ice(ctx, tx, ty, 3)
+	end
+end
+
 local function start_suika_collision(ctx, mob)
 	ctx.suika_event = {
 		mob = mob,
@@ -119,7 +140,7 @@ local function point_in_dir(ctx, dir)
 	return best or map.random_room_point(ctx)
 end
 
-local function add_supply_item(ctx, point, info, fake)
+local function add_supply_item(ctx, point, info, fake, group)
 	ctx.supplies[#ctx.supplies + 1] = {
 		x = point.x,
 		y = point.y,
@@ -129,18 +150,62 @@ local function add_supply_item(ctx, point, info, fake)
 		color = info.color,
 		alpha = 0,
 		fake = fake,
+		group = group,
+		time = ctx.supply_lifetime,
+		ping_time = 0,
 	}
 end
 
 local function add_supply(ctx)
 	local info = supply_types[math.random(#supply_types)]
-	local real = map.random_room_point(ctx)
-	local spoken = opposite_dir[point_dir(ctx, real)]
-	add_supply_item(ctx, real, info, false)
-	add_supply_item(ctx, point_in_dir(ctx, spoken), info, true)
+	local group = {}
+	local zones = {
+		function() return { x = math.random(2, ctx.MAP_W - 1), y = math.random(2, math.floor(ctx.MAP_H * 0.28)) } end,
+		function() return { x = math.random(2, ctx.MAP_W - 1), y = math.random(math.floor(ctx.MAP_H * 0.72), ctx.MAP_H - 1) } end,
+		function() return { x = math.random(2, math.floor(ctx.MAP_W * 0.28)), y = math.random(2, ctx.MAP_H - 1) } end,
+		function() return { x = math.random(math.floor(ctx.MAP_W * 0.72), ctx.MAP_W - 1), y = math.random(2, ctx.MAP_H - 1) } end,
+	}
+	local function zone_point(fn, used_dirs)
+		for _ = 1, 120 do
+			local p = fn()
+			local point = { x = (p.x - 0.5) * ctx.TILE, y = (p.y - 0.5) * ctx.TILE }
+			local dir = point_dir(ctx, point)
+			if ctx.map[p.y] and ctx.map[p.y][p.x] == 0 and not used_dirs[dir] then return point, dir end
+		end
+		for _ = 1, 120 do
+			local point = map.random_room_point(ctx)
+			local dir = point_dir(ctx, point)
+			if not used_dirs[dir] then return point, dir end
+		end
+		local point = map.random_room_point(ctx)
+		return point, point_dir(ctx, point)
+	end
+	for i = #zones, 2, -1 do
+		local j = math.random(i)
+		zones[i], zones[j] = zones[j], zones[i]
+	end
+	local used_dirs = {}
+	local real, real_dir = zone_point(zones[1], used_dirs)
+	used_dirs[real_dir] = true
+	local spoken = opposite_dir[real_dir]
+	add_supply_item(ctx, real, info, false, group)
+	for i = 2, 4 do
+		local point, dir = zone_point(zones[i], used_dirs)
+		used_dirs[dir] = true
+		add_supply_item(ctx, point, info, true, group)
+	end
+	for _, supply in ipairs(ctx.supplies) do
+		if supply.group == group then supply.ping_time = ctx.supply_ping_duration end
+	end
 	ui.start_briefing(ctx, "left", ("보급품은 %s에 있어"):format(dir_names[spoken]))
 	ctx.sagume_location_timer = 30
 	ctx.state.prompt = "Supply dropped."
+end
+
+local function remove_supply_group(ctx, group)
+	for i = #ctx.supplies, 1, -1 do
+		if ctx.supplies[i].group == group then table.remove(ctx.supplies, i) end
+	end
 end
 
 local function add_seija(ctx)
@@ -166,6 +231,7 @@ end
 
 function entities.populate(ctx)
 	ctx.objectives, ctx.traps, ctx.mobs, ctx.cubes, ctx.supplies = {}, {}, {}, {}, {}
+	ctx.ice_tiles, ctx.ice_by_key = {}, {}
 	add_objective(ctx, ctx.rooms[2], "Reach RED position", { 0.92, 0.2, 0.18 })
 	add_objective(ctx, ctx.rooms[6], "Reach GREEN position", { 0.35, 0.82, 0.42 })
 	add_objective(ctx, ctx.rooms[8], "Reach BLUE position", { 0.2, 0.55, 0.95 })
@@ -173,19 +239,20 @@ function entities.populate(ctx)
 	add_trap(ctx, ctx.rooms[3], "flip_xy")
 	add_trap(ctx, ctx.rooms[7], "flip_y")
 	add_trap(ctx, ctx.rooms[9], "flip_xy")
-	for i = 1, 4 do add_mob(ctx, mob_types[(i - 1) % #mob_types + 1]) end
+	for i = 1, 5 do add_mob(ctx, mob_types[(i - 1) % #mob_types + 1]) end
 	for _ = 1, 8 do add_cube(ctx) end
 	add_seija(ctx)
 end
 
 function entities.update_supplies(ctx, dt)
-	ctx.supply_timer = ctx.supply_timer - dt
-	if ctx.supply_timer <= 0 then
-		ctx.supply_timer = 15
-		if #ctx.supplies <= 2 then add_supply(ctx) end
-	end
 	for i = #ctx.supplies, 1, -1 do
 		local supply = ctx.supplies[i]
+		supply.time = supply.time - dt
+		supply.ping_time = math.max(0, (supply.ping_time or 0) - dt)
+		if supply.time <= 0 then
+			remove_supply_group(ctx, supply.group)
+			break
+		else
 		local dist = ((ctx.player.x - supply.x) ^ 2 + (ctx.player.y - supply.y) ^ 2) ^ 0.5
 		if dist < ctx.player.r + supply.r then
 			if supply.fake then
@@ -206,8 +273,15 @@ function entities.update_supplies(ctx, dt)
 				effects.reset_view_rotation(ctx)
 				ctx.state.prompt = "View direction restored."
 			end
-			table.remove(ctx.supplies, i)
+			remove_supply_group(ctx, supply.group)
+			break
 		end
+		end
+	end
+	ctx.supply_timer = ctx.supply_timer - dt
+	if ctx.supply_timer <= 0 then
+		ctx.supply_timer = ctx.supply_interval
+		if #ctx.supplies == 0 then add_supply(ctx) end
 	end
 end
 
@@ -244,6 +318,8 @@ function entities.update_mobs(ctx, dt)
 				mob.path_i = mob.path_i + 1
 			elseif not movement.move_body(ctx, mob, dx, dy, mob.speed * dt) then
 				mob.path = {}
+			elseif mob.type == "cirno" then
+				spawn_cirno_ice(ctx, mob)
 			end
 		elseif mob.path_i > #mob.path then
 			mob.target = mob.target % #mob.points + 1
@@ -261,6 +337,27 @@ function entities.update_mobs(ctx, dt)
 				effects.start_rumia_dark_fx(ctx)
 				mob.cd = 8
 			end
+		end
+	end
+end
+
+function entities.update_ice(ctx, dt)
+	for i = #ctx.ice_tiles, 1, -1 do
+		local ice = ctx.ice_tiles[i]
+		ice.time = ice.time - dt
+		if ice.spread_left > 0 then
+			ice.spread = ice.spread - dt
+			if ice.spread <= 0 then
+				local next_spread = ice.spread_left - 1
+				ice.spread_left = 0
+				for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+					add_ice(ctx, ice.tx + d[1], ice.ty + d[2], next_spread)
+				end
+			end
+		end
+		if ice.time <= 0 then
+			ctx.ice_by_key[ice.tx .. "," .. ice.ty] = nil
+			table.remove(ctx.ice_tiles, i)
 		end
 	end
 end
