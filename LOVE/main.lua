@@ -16,8 +16,8 @@ local ctx = {
 	W = 1280,
 	H = 720,
 	TILE = 32,
-	MAP_W = 270,
-	MAP_H = 192,
+	MAP_W = 216,
+	MAP_H = 154,
 	map = {},
 	rooms = {},
 	objectives = {},
@@ -36,15 +36,12 @@ local ctx = {
 	view_basis = { sx = 1, sy = 1, rot = 0 },
 	control_fx = { sx = 1, sy = 1, time = 0, duration = 0, label = "" },
 	minimap_fx = { map = { rot = 0, sx = 1, sy = 1 } },
-	minimap_interference_timer = 20,
+	minimap_interference_timer = 60,
 	sagume_location_timer = 30,
 	sagume_call_cd = 0,
 	supply_interval = 60,
 	supply_lifetime = 60,
-	supply_ping_duration = 8,
 	supply_timer = 60,
-	time_limit = 180,
-	time_left = 180,
 	move_sound_timer = 0,
 	help_popup = 0,
 	full_map_open = false,
@@ -68,6 +65,7 @@ local ctx = {
 	},
 	player = { x = 64, y = 64, r = 12, aim = 0, aim_turn = 12, profile = 1, dash_cd = 0, dash = nil, groggy = 0, sight_bonus = 0, fov_bonus = 0, speed_bonus = 0 },
 	state = { done = false, result = "", prompt = "WASD: move  Mouse: aim  Space: step dash  R: new map" },
+	map_tiles = nil,
 	briefing = nil,
 	interference = nil,
 	briefing_i = 0,
@@ -91,6 +89,35 @@ local ctx = {
 ctx.VIEW_W = ctx.W * 0.8
 ctx.PANEL_X = ctx.VIEW_W
 
+local function load_map_tiles()
+	local ok, image = pcall(love.graphics.newImage, "Image/Dungeon/dungeon_tiles.png")
+	if not ok then return end
+	image:setFilter("nearest", "nearest")
+	local iw, ih = image:getDimensions()
+	local source_tile = 16
+	local function quad(col, row)
+		return love.graphics.newQuad((col - 1) * source_tile, (row - 1) * source_tile, source_tile, source_tile, iw, ih)
+	end
+	ctx.map_tiles = {
+		image = image,
+		scale = ctx.TILE / source_tile,
+		floors = {
+			[7] = { quad(3, 3) },
+			[8] = { quad(4, 3), quad(5, 3), quad(6, 3) },
+			[9] = { quad(7, 3) },
+			[4] = { quad(3, 4), quad(3, 5), quad(3, 6) },
+			[5] = { quad(4, 4), quad(5, 4), quad(6, 4), quad(4, 5), quad(5, 5), quad(6, 5), quad(4, 6), quad(5, 6), quad(6, 6) },
+			[6] = { quad(7, 4), quad(7, 5), quad(7, 6) },
+		},
+		walls = {
+			inner = quad(4, 18),
+			[7] = quad(3, 11), [8] = quad(4, 11), [9] = quad(5, 11),
+			[4] = quad(3, 18), [6] = quad(5, 18),
+			[1] = quad(3, 19), [2] = quad(4, 19), [3] = quad(5, 19),
+		},
+	}
+end
+
 local function reset_run()
 	ctx.objectives, ctx.traps, ctx.mobs, ctx.cubes, ctx.supplies, ctx.afterimages = {}, {}, {}, {}, {}, {}
 	ctx.objective_pings = {}
@@ -100,15 +127,12 @@ local function reset_run()
 	ctx.view_basis = { sx = 1, sy = 1, rot = 0 }
 	ctx.control_fx = { sx = 1, sy = 1, time = 0, duration = 0, label = "" }
 	ctx.minimap_fx = { map = { rot = 0, sx = 1, sy = 1 } }
-	ctx.minimap_interference_timer = 20
+	ctx.minimap_interference_timer = 60
 	ctx.sagume_location_timer = 30
 	ctx.sagume_call_cd = 0
 	ctx.supply_interval = 60
 	ctx.supply_lifetime = 60
-	ctx.supply_ping_duration = 8
 	ctx.supply_timer = 1
-	ctx.time_limit = 180
-	ctx.time_left = ctx.time_limit
 	ctx.move_sound_timer = 0
 	ctx.help_popup = 0
 	ctx.full_map_open = false
@@ -206,37 +230,6 @@ local function seija_room_line()
 	return ("세이자는 %s 방향의 방에 있어"):format(spoken_room_direction(ctx.seija.x, ctx.seija.y))
 end
 
-local function nearest_supply()
-	local best, best_dist = nil, math.huge
-	for _, supply in ipairs(ctx.supplies) do
-		if not supply.fake then
-			local dist = (supply.x - ctx.player.x) ^ 2 + (supply.y - ctx.player.y) ^ 2
-			if dist < best_dist then best, best_dist = supply, dist end
-		end
-	end
-	return best
-end
-
-local function reveal_supplies()
-	for _, supply in ipairs(ctx.supplies) do
-		supply.ping_time = ctx.supply_ping_duration
-	end
-end
-
-local function supply_player_line()
-	local supply = nearest_supply()
-	if not supply then return "보급품은 없어" end
-	reveal_supplies()
-	return ("보급품은 네 위치를 기준으로 %s에 있어"):format(spoken_player_direction(supply.x, supply.y))
-end
-
-local function supply_room_line()
-	local supply = nearest_supply()
-	if not supply then return "보급품은 없어" end
-	reveal_supplies()
-	return ("보급품은 %s 방향의 방에 있어"):format(spoken_room_direction(supply.x, supply.y))
-end
-
 local function objective_line()
 	local choices = {}
 	for _, objective in ipairs(ctx.objectives) do
@@ -245,7 +238,7 @@ local function objective_line()
 	if #choices == 0 then return "확인할 목표는 없어" end
 	local objective = choices[math.random(#choices)]
 	ctx.objective_pings[#ctx.objective_pings + 1] = { objective = objective, time = 8, duration = 8 }
-	return ("%s 목표는 %s 방향의 방에 있어"):format(objective.name, spoken_room_direction(objective.x, objective.y))
+	return ("%s는 %s 방향의 방에 있어"):format(objective.name, spoken_room_direction(objective.x, objective.y))
 end
 
 local function trigger_sagume_default_briefing()
@@ -259,8 +252,8 @@ local function trigger_sagume_default_briefing()
 end
 
 local function ask_sagume()
-	ctx.question_i = ctx.question_i % 5 + 1
-	local lines = { objective_line, seija_player_line, seija_room_line, supply_player_line, supply_room_line }
+	ctx.question_i = ctx.question_i % 3 + 1
+	local lines = { objective_line, seija_player_line, seija_room_line }
 	sagume_say(lines[ctx.question_i]())
 end
 
@@ -301,8 +294,6 @@ local function request_briefing(kind)
 	ctx.sagume_call_cd = 3
 	if kind == "objective" then
 		sagume_say(objective_line())
-	elseif kind == "supply" then
-		sagume_say(supply_room_line())
 	elseif kind == "seija" then
 		sagume_say(seija_room_line())
 	end
@@ -328,13 +319,7 @@ local function screen_input(dx, dy)
 end
 
 local function world_to_screen(x, y)
-	local sx, sy = x - ctx.camera.x, y - ctx.camera.y
-	local cx, cy = ctx.VIEW_W / 2, ctx.H / 2
-	sx, sy = sx - cx, sy - cy
-	sx, sy = sx * ctx.screen_fx.sx, sy * ctx.screen_fx.sy
-	local c, s = math.cos(ctx.screen_fx.rot or 0), math.sin(ctx.screen_fx.rot or 0)
-	sx, sy = sx * c - sy * s, sx * s + sy * c
-	return sx + cx, sy + cy
+	return effects.world_to_screen(ctx, x, y)
 end
 
 local function draw_upright_at(x, y, draw)
@@ -348,8 +333,83 @@ local function draw_upright_at(x, y, draw)
 	love.graphics.pop()
 end
 
+local function is_floor_tile(tx, ty)
+	return ctx.map[ty] and ctx.map[ty][tx] == 0
+end
+
+local function is_wall_tile(tx, ty)
+	return not is_floor_tile(tx, ty)
+end
+
+local function pick_tile(list, tx, ty)
+	return list[(tx * 17 + ty * 31) % #list + 1]
+end
+
+local function screen_side(dx, dy)
+	local fx = ctx.screen_fx
+	dx, dy = dx * (fx.sx or 1), dy * (fx.sy or 1)
+	local c, s = math.cos(fx.rot or 0), math.sin(fx.rot or 0)
+	local sx, sy = dx * c - dy * s, dx * s + dy * c
+	if math.abs(sx) > math.abs(sy) then return sx < 0 and "west" or "east" end
+	return sy < 0 and "north" or "south"
+end
+
+local function mark_side(side, north, south, west, east)
+	if side == "north" then return true, south, west, east end
+	if side == "south" then return north, true, west, east end
+	if side == "west" then return north, south, true, east end
+	return north, south, west, true
+end
+
+local function neighbor_flags(tx, ty, predicate)
+	local north, south, west, east = false, false, false, false
+	if predicate(tx, ty - 1) then north, south, west, east = mark_side(screen_side(0, -1), north, south, west, east) end
+	if predicate(tx, ty + 1) then north, south, west, east = mark_side(screen_side(0, 1), north, south, west, east) end
+	if predicate(tx - 1, ty) then north, south, west, east = mark_side(screen_side(-1, 0), north, south, west, east) end
+	if predicate(tx + 1, ty) then north, south, west, east = mark_side(screen_side(1, 0), north, south, west, east) end
+	return north, south, west, east
+end
+
+local function floor_quad(tx, ty)
+	local tiles = ctx.map_tiles
+	local north, south, west, east = neighbor_flags(tx, ty, is_wall_tile)
+
+	if south and west then return pick_tile(tiles.floors[4], tx, ty) end
+	if south and east then return pick_tile(tiles.floors[6], tx, ty) end
+	if south then return pick_tile(tiles.floors[5], tx, ty) end
+	if north and west then return pick_tile(tiles.floors[7], tx, ty) end
+	if north and east then return pick_tile(tiles.floors[9], tx, ty) end
+	if north then return pick_tile(tiles.floors[8], tx, ty) end
+	if west then return pick_tile(tiles.floors[4], tx, ty) end
+	if east then return pick_tile(tiles.floors[6], tx, ty) end
+	return pick_tile(tiles.floors[5], tx, ty)
+end
+
+local function wall_tile(tx, ty)
+	local tiles = ctx.map_tiles.walls
+	local north, south, west, east = neighbor_flags(tx, ty, is_floor_tile)
+
+	if north and west then return tiles[7] end
+	if north and east then return tiles[9] end
+	if south and west then return tiles[1] end
+	if south and east then return tiles[3] end
+	if north then return tiles[8] end
+	if south then return tiles[2] end
+	if west then return tiles[4] end
+	if east then return tiles[6] end
+	return tiles.inner
+end
+
 local function draw_wall_tile(tx, ty)
 	local x, y, t = (tx - 1) * ctx.TILE, (ty - 1) * ctx.TILE, ctx.TILE
+	if ctx.map_tiles then
+		local tiles = ctx.map_tiles
+		draw_upright_at(x + t / 2, y + t / 2, function()
+			love.graphics.setColor(1, 1, 1)
+			love.graphics.draw(tiles.image, wall_tile(tx, ty), x, y, 0, tiles.scale, tiles.scale)
+		end)
+		return
+	end
 	love.graphics.setColor(0.12, 0.12, 0.14)
 	love.graphics.rectangle("fill", x, y, t, t)
 	love.graphics.setColor(0.22, 0.22, 0.25)
@@ -358,6 +418,15 @@ local function draw_wall_tile(tx, ty)
 	love.graphics.rectangle("fill", x, y + t * 0.62, t, t * 0.38)
 	love.graphics.setColor(0.08, 0.08, 0.1, 0.7)
 	love.graphics.line(x, y + t * 0.62, x + t, y + t * 0.62)
+end
+
+local function draw_floor_tile(tx, ty)
+	if not ctx.map_tiles then return end
+	local x, y = (tx - 1) * ctx.TILE, (ty - 1) * ctx.TILE
+	draw_upright_at(x + ctx.TILE / 2, y + ctx.TILE / 2, function()
+		love.graphics.setColor(1, 1, 1)
+		love.graphics.draw(ctx.map_tiles.image, floor_quad(tx, ty), x, y, 0, ctx.map_tiles.scale, ctx.map_tiles.scale)
+	end)
 end
 
 local function draw_standing_actor(actor, color, alpha, aim, accent)
@@ -423,17 +492,6 @@ local function draw_status_popup()
 	love.graphics.print(popup.text, x + 17, y + 10)
 end
 
-local function draw_timer()
-	local time_left = math.ceil(ctx.time_left or 0)
-	local text = ("TIME %02d:%02d"):format(math.floor(time_left / 60), time_left % 60)
-	local font = love.graphics.getFont()
-	local w = font:getWidth(text)
-	love.graphics.setColor(0.04, 0.045, 0.05, 0.72)
-	love.graphics.rectangle("fill", (ctx.VIEW_W - w) / 2 - 14, 14, w + 28, 32, 6, 6)
-	love.graphics.setColor(time_left <= 30 and 1 or 0.95, time_left <= 30 and 0.35 or 0.95, time_left <= 30 and 0.28 or 0.9)
-	love.graphics.print(text, (ctx.VIEW_W - w) / 2, 23)
-end
-
 local function draw_supply_trackers()
 	local margin = 24
 	local function draw_tracker(x, y, color, shape)
@@ -469,18 +527,13 @@ end
 
 function love.load()
 	love.window.setMode(ctx.W, ctx.H)
+	load_map_tiles()
 	effects.load(ctx)
 	ui.load(ctx)
 	reset_run()
 end
 
 function love.update(dt)
-	if not ctx.state.cleared and ctx.state.result == "" then
-		ctx.time_left = math.max(0, ctx.time_left - dt)
-		if ctx.time_left == 0 then
-			ctx.state.result = "Time over. Press R for a new map."
-		end
-	end
 	ctx.player.dash_cd = math.max(0, ctx.player.dash_cd - dt)
 	ctx.move_sound_timer = math.max(0, ctx.move_sound_timer - dt)
 	ctx.sagume_call_cd = math.max(0, ctx.sagume_call_cd - dt)
@@ -626,7 +679,9 @@ function love.draw()
 	local last_y = math.min(ctx.MAP_H, math.floor((ctx.camera.y + ctx.H + cull_pad_y) / ctx.TILE) + 2)
 	for y = first_y, last_y do
 		for x = first_x, last_x do
-			if ctx.map[y][x] == 1 then
+			if ctx.map[y][x] == 0 then
+				draw_floor_tile(x, y)
+			elseif ctx.map[y][x] == 1 then
 				draw_wall_tile(x, y)
 			end
 		end
@@ -754,7 +809,6 @@ function love.draw()
 	ui.draw_briefing_menu(ctx)
 	ui.draw_help_popup(ctx)
 	draw_supply_trackers()
-	draw_timer()
 	love.graphics.setColor(0.8, 0.82, 0.84)
 	love.graphics.print(("Seed: %d"):format(ctx.seed), 16, ctx.H - 28)
 	draw_status_popup()

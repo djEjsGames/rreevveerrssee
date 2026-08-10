@@ -106,6 +106,39 @@ function effects.diag_flip_to_canvas(ctx, x, y)
 	return x, y
 end
 
+function effects.canvas_to_screen(ctx, x, y, stable)
+	local fx = ctx.screen_fx
+	if fx.diag_flip and fx.rot_time then
+		local pad_x, pad_y = (ctx.flip_size - ctx.VIEW_W) / 2, (ctx.flip_size - ctx.H) / 2
+		local u, v = (x + pad_x) / ctx.flip_size, (y + pad_y) / ctx.flip_size
+		local x1, y1, x2, y2, x3, y3, x4, y4 = diag_flip_points(ctx)
+		if u >= v then
+			return x1 * (1 - u) + x2 * (u - v) + x3 * v,
+				y1 * (1 - u) + y2 * (u - v) + y3 * v
+		end
+		return x1 * (1 - v) + x3 * u + x4 * (v - u),
+			y1 * (1 - v) + y3 * u + y4 * (v - u)
+	end
+
+	local cx, cy = ctx.VIEW_W / 2, ctx.H / 2
+	x, y = x - cx, y - cy
+	x, y = x * (fx.sx or 1), y * (fx.sy or 1)
+	local c, s = math.cos(fx.rot or 0), math.sin(fx.rot or 0)
+	x, y = x * c - y * s, x * s + y * c
+	if ctx.drunk_fx and not stable then
+		local t, strength = ctx.drunk_fx.time, ctx.drunk_fx.strength
+		local dc, ds = math.cos(math.sin(t * 1.5) * 0.3 * strength), math.sin(math.sin(t * 1.5) * 0.3 * strength)
+		x, y = x * dc - y * ds, x * ds + y * dc
+		x = x + math.sin(t * 2.4) * 12 * strength
+		y = y + math.cos(t * 1.9) * 9 * strength
+	end
+	return x + cx, y + cy
+end
+
+function effects.world_to_screen(ctx, x, y, stable)
+	return effects.canvas_to_screen(ctx, x - ctx.camera.x, y - ctx.camera.y, stable)
+end
+
 function effects.start_view_interference_fx(ctx, target)
 	local fx = ctx.screen_fx
 	finish_screen_tween(fx)

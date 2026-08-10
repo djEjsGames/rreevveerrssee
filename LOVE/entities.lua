@@ -138,25 +138,7 @@ local function add_cube(ctx)
 	ctx.cubes[#ctx.cubes + 1] = { x = point.x, y = point.y, r = ctx.TILE, alpha = 0, push_cd = 0, move = nil }
 end
 
-local function point_dir(ctx, point)
-	local dx, dy = point.x - ctx.player.x, point.y - ctx.player.y
-	local ax, ay = math.abs(dx), math.abs(dy)
-	if ax > ay * 2 then return dx > 0 and "east" or "west" end
-	if ay > ax * 2 then return dy > 0 and "south" or "north" end
-	return (dy > 0 and "south" or "north") .. "_" .. (dx > 0 and "east" or "west")
-end
-
-local function point_in_dir(ctx, dir)
-	local best = nil
-	for _ = 1, 200 do
-		local point = map.random_room_point(ctx)
-		if point_dir(ctx, point) == dir then return point end
-		best = best or point
-	end
-	return best or map.random_room_point(ctx)
-end
-
-local function add_supply_item(ctx, point, info, fake, group)
+local function add_supply_item(ctx, point, info)
 	ctx.supplies[#ctx.supplies + 1] = {
 		x = point.x,
 		y = point.y,
@@ -165,8 +147,6 @@ local function add_supply_item(ctx, point, info, fake, group)
 		icon = info.icon,
 		color = info.color,
 		alpha = 0,
-		fake = fake,
-		group = group,
 		time = ctx.supply_lifetime,
 		ping_time = 0,
 	}
@@ -174,54 +154,29 @@ end
 
 local function add_supply(ctx)
 	local info = supply_types[math.random(#supply_types)]
-	local group = {}
 	local zones = {
 		function() return { x = math.random(2, ctx.MAP_W - 1), y = math.random(2, math.floor(ctx.MAP_H * 0.28)) } end,
 		function() return { x = math.random(2, ctx.MAP_W - 1), y = math.random(math.floor(ctx.MAP_H * 0.72), ctx.MAP_H - 1) } end,
 		function() return { x = math.random(2, math.floor(ctx.MAP_W * 0.28)), y = math.random(2, ctx.MAP_H - 1) } end,
 		function() return { x = math.random(math.floor(ctx.MAP_W * 0.72), ctx.MAP_W - 1), y = math.random(2, ctx.MAP_H - 1) } end,
 	}
-	local function zone_point(fn, used_dirs)
+	local function zone_point(fn)
 		for _ = 1, 120 do
 			local p = fn()
 			local point = { x = (p.x - 0.5) * ctx.TILE, y = (p.y - 0.5) * ctx.TILE }
-			local dir = point_dir(ctx, point)
-			if ctx.map[p.y] and ctx.map[p.y][p.x] == 0 and not used_dirs[dir] then return point, dir end
+			if ctx.map[p.y] and ctx.map[p.y][p.x] == 0 then return point end
 		end
-		for _ = 1, 120 do
-			local point = map.random_room_point(ctx)
-			local dir = point_dir(ctx, point)
-			if not used_dirs[dir] then return point, dir end
-		end
-		local point = map.random_room_point(ctx)
-		return point, point_dir(ctx, point)
+		return map.random_room_point(ctx)
 	end
 	for i = #zones, 2, -1 do
 		local j = math.random(i)
 		zones[i], zones[j] = zones[j], zones[i]
 	end
-	local used_dirs = {}
-	local real, real_dir = zone_point(zones[1], used_dirs)
-	used_dirs[real_dir] = true
-	local spoken = opposite_dir[real_dir]
-	add_supply_item(ctx, real, info, false, group)
-	for i = 2, 4 do
-		local point, dir = zone_point(zones[i], used_dirs)
-		used_dirs[dir] = true
-		add_supply_item(ctx, point, info, true, group)
-	end
-	for _, supply in ipairs(ctx.supplies) do
-		if supply.group == group then supply.ping_time = ctx.supply_ping_duration end
-	end
-	ui.start_briefing(ctx, "left", ("보급품은 %s에 있어"):format(dir_names[spoken]))
+	add_supply_item(ctx, zone_point(zones[1]), info)
+	local speaker = ctx.player.kind == "ringo" and "Seiran" or "Ringo"
+	ui.start_briefing(ctx, "left", "보급품을 뒀어. 잘 찾아봐.", speaker)
 	ctx.sagume_location_timer = 30
 	ctx.state.prompt = "Supply dropped."
-end
-
-local function remove_supply_group(ctx, group)
-	for i = #ctx.supplies, 1, -1 do
-		if ctx.supplies[i].group == group then table.remove(ctx.supplies, i) end
-	end
 end
 
 local function add_seija(ctx)
@@ -248,9 +203,9 @@ end
 function entities.populate(ctx)
 	ctx.objectives, ctx.traps, ctx.mobs, ctx.cubes, ctx.supplies = {}, {}, {}, {}, {}
 	ctx.ice_tiles, ctx.ice_by_key = {}, {}
-	add_objective(ctx, ctx.rooms[2], "Reach RED position", { 0.92, 0.2, 0.18 })
-	add_objective(ctx, ctx.rooms[6], "Reach GREEN position", { 0.35, 0.82, 0.42 })
-	add_objective(ctx, ctx.rooms[8], "Reach BLUE position", { 0.2, 0.55, 0.95 })
+	add_objective(ctx, ctx.rooms[2], "빨강 당고", { 0.92, 0.2, 0.18 })
+	add_objective(ctx, ctx.rooms[6], "초록 당고", { 0.35, 0.82, 0.42 })
+	add_objective(ctx, ctx.rooms[8], "파랑 당고", { 0.2, 0.55, 0.95 })
 	add_trap(ctx, ctx.rooms[1], "flip_x")
 	add_trap(ctx, ctx.rooms[3], "flip_xy")
 	add_trap(ctx, ctx.rooms[7], "flip_y")
@@ -266,14 +221,12 @@ function entities.update_supplies(ctx, dt)
 		supply.time = supply.time - dt
 		supply.ping_time = math.max(0, (supply.ping_time or 0) - dt)
 		if supply.time <= 0 then
-			remove_supply_group(ctx, supply.group)
+			table.remove(ctx.supplies, i)
 			break
 		else
 		local dist = ((ctx.player.x - supply.x) ^ 2 + (ctx.player.y - supply.y) ^ 2) ^ 0.5
 		if dist < ctx.player.r + supply.r then
-			if supply.fake then
-				ctx.state.prompt = "Fake supply opened."
-			elseif supply.kind == "sight" then
+			if supply.kind == "sight" then
 				ctx.player.sight_bonus = ctx.player.sight_bonus + 45
 				ctx.state.prompt = "Supply acquired."
 			elseif supply.kind == "fov" then
@@ -290,7 +243,7 @@ function entities.update_supplies(ctx, dt)
 				ui.reset_minimap_fx(ctx)
 				ctx.state.prompt = "View direction restored."
 			end
-			remove_supply_group(ctx, supply.group)
+			table.remove(ctx.supplies, i)
 			break
 		end
 		end

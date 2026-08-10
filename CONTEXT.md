@@ -6,7 +6,7 @@ This project is currently in a game-idea concretization phase. Treat this file a
 
 ## Game Direction
 
-- Build a small 2D Godot mini-game designed for fast production.
+- Build a small 2D LÖVE mini-game designed for fast production.
 - Target a Steam release if the project proves fun enough.
 - The game is a Touhou Project fan work using Kijin Seija, Kishin Sagume, and moon rabbit characters.
 - Seija and Sagume do not need to be playable leads. They can function as systems, commanders, disruptions, or narrative devices.
@@ -27,6 +27,7 @@ This project is currently in a game-idea concretization phase. Treat this file a
 - Directors: Kishin Sagume and Doremy Sweet.
 - Players: Ringo and Seiran.
 - Roaming participants: Suika Ibuki, Mystia Lorelei, and Rumia.
+- Interference candidate participants: Cirno, Tewi Inaba, Mamizou Futatsuiwa, and Reisen Udongein Inaba.
 - Opposing side: Kijin Seija and Shinmyoumaru Sukuna.
 
 ## Player Characters
@@ -138,7 +139,14 @@ Example participant patterns:
 - Suika wanders drunkenly, blocks paths, and can become a larger collision threat.
 - Mystia can interfere with visibility or on-screen clarity.
 - Rumia can create darkness areas, hide paths, or reduce visibility around hazards.
-- Aya and Cirno are not in the current base cast unless added later.
+
+Interference candidate direction:
+
+- Cirno is the strongest first add: ice fields, slippery movement, frozen paths, or temporary route blocks.
+- Tewi is a strong second add: traps, fake supplies, prank routing, and bait objects.
+- Reisen fits the moon rabbit theme but should avoid overlapping with Sagume/Doremy/Seija information rules; use restrained perception or danger-zone disruption if added.
+- Mamizou is best saved for later because disguise and fake-object systems increase production cost.
+- Do not add all candidates at once. Add one participant pattern at a time and test whether it changes play clearly.
 
 ## Obstacles
 
@@ -250,9 +258,9 @@ Add these only after the base mission loop is proven fun.
 - Shinmyoumaru's gameplay role is intentionally on hold until the core setting and loop need her.
 - Seija's communication interference is also on hold until trap and roaming-obstacle gameplay are established.
 
-## Godot Direction
+## LÖVE Direction
 
-- Use Godot 2D.
+- Use the LÖVE engine.
 - Keep systems data-driven where it directly supports mission cards.
 - Do not build a broad framework before the first playable loop.
 - Favor small scenes, simple resources, and clear UI.

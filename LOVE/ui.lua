@@ -5,8 +5,7 @@ local TAU = math.pi * 2
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local briefing_menu_items = {
 	{ key = "objective", label = "목표", angle = -math.pi / 2 },
-	{ key = "supply", label = "보급", angle = math.pi / 6 },
-	{ key = "seija", label = "세이자", angle = math.pi * 5 / 6 },
+	{ key = "seija", label = "세이자", angle = math.pi / 2 },
 }
 local briefing_menu_inner = 102
 local briefing_menu_outer = 184
@@ -210,7 +209,7 @@ function ui.reset_minimap_fx(ctx)
 end
 
 function ui.trigger_minimap_interference(ctx, forced)
-	ctx.minimap_interference_timer = 20
+	ctx.minimap_interference_timer = 60
 	local rotations = { -2, -1, 1, 2 }
 	local flips = { { -1, 1 }, { 1, -1 }, { -1, -1 } }
 	local diag_axes = { math.pi / 4, math.pi * 3 / 4, math.pi * 5 / 4, math.pi * 7 / 4 }

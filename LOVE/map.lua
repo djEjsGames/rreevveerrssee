@@ -232,12 +232,12 @@ function mapmod.generate(ctx)
 		end
 	end
 
-	for _ = 1, 130 do
-		if next_id > 48 then break end
+	for _ = 1, 65 do
+		if next_id > 30 then break end
 		local w, h = math.random(7, 16), math.random(6, 14)
 		local x, y = math.random(34, ctx.MAP_W - 34 - w), math.random(28, ctx.MAP_H - 28 - h)
 		local room = { id = next_id, x = x, y = y, w = w, h = h, template = "fill" }
-		if not overlaps_room(room, ctx.rooms, 3) then
+		if not overlaps_room(room, ctx.rooms, 4) then
 			ctx.rooms[next_id] = room
 			carve_room(ctx, room)
 			next_id = next_id + 1
@@ -271,7 +271,7 @@ function mapmod.generate(ctx)
 		end
 	end
 	table.sort(links, function(a, b) return a.d < b.d end)
-	for i = 1, math.min(18, #links) do
+	for i = 1, math.min(9, #links) do
 		carve_hall(ctx, room_center(links[i].a), room_center(links[i].b))
 	end
 
