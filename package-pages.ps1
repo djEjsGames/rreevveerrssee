@@ -25,6 +25,14 @@ $info = [ordered]@{
 	data_bytes = (Get-Item -LiteralPath (Join-Path $pages $dataName)).Length
 	love_sha256 = (Get-FileHash -LiteralPath (Join-Path $root "dist\rreevveerrssee-prototype.love") -Algorithm SHA256).Hash.ToLowerInvariant()
 }
-$info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $pages "build-info.json") -Encoding UTF8
+$buildId = $info.love_sha256.Substring(0, 12)
+$index = Join-Path $pages "index.html"
+$indexHtml = Get-Content -LiteralPath $index -Raw
+$indexHtml = $indexHtml.Replace('src="game.js"', "src=""game.js?v=$buildId""")
+$indexHtml = $indexHtml.Replace('src="love.js"', "src=""love.js?v=$buildId""")
+$indexHtml = $indexHtml.Replace('</footer>', "  <p>Build: $buildId</p>`r`n    </footer>")
+Set-Content -LiteralPath $index -Value $indexHtml -NoNewline
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[IO.File]::WriteAllText((Join-Path $pages "build-info.json"), ($info | ConvertTo-Json), $utf8NoBom)
 Set-Content -LiteralPath (Join-Path $pages ".nojekyll") -Value ""
 Write-Output "Created GitHub Pages build in $pages"

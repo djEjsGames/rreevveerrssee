@@ -25,6 +25,11 @@ if ($remoteInfo.love_sha256 -ne $info.love_sha256) {
 	throw "Pages is stale. local=$($info.love_sha256) remote=$($remoteInfo.love_sha256)"
 }
 
+$index = Invoke-WebRequest -Uri "$BaseUrl/index.html?v=$cacheBust" -UseBasicParsing
+if ($index.Content -notmatch "game\.js\?v=$cacheBust") {
+	throw "Pages index.html does not reference cache-busted game.js for $cacheBust."
+}
+
 $gameJs = Invoke-WebRequest -Uri "$BaseUrl/game.js?v=$cacheBust" -UseBasicParsing
 if ($gameJs.Content -notmatch [Regex]::Escape($info.data_file)) {
 	throw "Pages game.js does not reference $($info.data_file)."
