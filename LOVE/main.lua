@@ -43,6 +43,7 @@ local ctx = {
 	supply_lifetime = 60,
 	supply_timer = 60,
 	move_sound_timer = 0,
+	tank_afterimage_timer = 0,
 	help_popup = 0,
 	full_map_open = false,
 	debug_npc_map = false,
@@ -57,14 +58,14 @@ local ctx = {
 		{ name = "fast", speed = 35 },
 		{ name = "instant", speed = nil },
 	},
-	settings = { fade_mode = 2, distort_mode = "swirl" },
+	settings = { fade_mode = 2, distort_mode = "swirl", control_mode = "free" },
 	profiles = {
 		{ name = "Scout", speed = 460, sight = 300, near = 78, fov = math.rad(95), rays = 96 },
 		{ name = "Operator", speed = 420, sight = 360, near = 68, fov = math.rad(70), rays = 84 },
 		{ name = "Runner", speed = 540, sight = 230, near = 86, fov = math.rad(55), rays = 64 },
 	},
 	player = { x = 64, y = 64, r = 12, aim = 0, aim_turn = 12, profile = 1, dash_cd = 0, dash = nil, groggy = 0, sight_bonus = 0, fov_bonus = 0, speed_bonus = 0 },
-	state = { done = false, result = "", prompt = "WASD: move  Mouse: aim  Space: step dash  R: new map" },
+	state = { done = false, result = "", prompt = "WASD: move  Mouse: aim  Space: step dash  T: controls" },
 	map_tiles = nil,
 	briefing = nil,
 	interference = nil,
@@ -134,6 +135,7 @@ local function reset_run()
 	ctx.supply_lifetime = 60
 	ctx.supply_timer = 1
 	ctx.move_sound_timer = 0
+	ctx.tank_afterimage_timer = 0
 	ctx.help_popup = 0
 	ctx.full_map_open = false
 	ctx.debug_npc_map = false
@@ -145,10 +147,11 @@ local function reset_run()
 	ctx.briefing = nil
 	ctx.briefings = {}
 	ctx.player.groggy = 0
+	ctx.player.tank_speed = 0
 	ctx.player.slide, ctx.player.last_move = nil, nil
 	ctx.player.sight_bonus, ctx.player.fov_bonus, ctx.player.speed_bonus = 0, 0, 0
 	ctx.player.kind = math.random(2) == 1 and "ringo" or "seiran"
-	ctx.state = { done = false, result = "", prompt = "WASD: move  Mouse: aim  Space: step dash  R: new map" }
+	ctx.state = { done = false, result = "", prompt = "WASD: move  Mouse: aim  Space: step dash  T: controls" }
 	map.generate(ctx)
 	entities.populate(ctx)
 end
@@ -318,6 +321,27 @@ local function screen_input(dx, dy)
 	return dx / basis.sx, dy / basis.sy
 end
 
+local function player_input(dt)
+	if ctx.settings.control_mode == "free" then
+		ctx.player.tank_speed = 0
+		local dx, dy = screen_input(movement.input())
+		return dx, dy, 1
+	end
+	local turn = (love.keyboard.isDown("d") and 1 or 0) - (love.keyboard.isDown("a") and 1 or 0)
+	local throttle = (love.keyboard.isDown("w") and 1 or 0) - (love.keyboard.isDown("s") and 1 or 0)
+	local speed = ctx.player.tank_speed or 0
+	local rate = throttle == 0 and 5.6 or 3.8
+	if speed < throttle then
+		speed = math.min(throttle, speed + rate * dt)
+	elseif speed > throttle then
+		speed = math.max(throttle, speed - rate * dt)
+	end
+	ctx.player.tank_speed = speed
+	ctx.player.aim = ctx.player.aim + turn * 2.8 * dt
+	local move_speed = dt == 0 and math.abs(speed) < 0.01 and throttle ~= 0 and throttle or speed
+	return math.cos(ctx.player.aim) * move_speed, math.sin(ctx.player.aim) * move_speed, math.abs(move_speed)
+end
+
 local function world_to_screen(x, y)
 	return effects.world_to_screen(ctx, x, y)
 end
@@ -427,6 +451,74 @@ local function draw_floor_tile(tx, ty)
 		love.graphics.setColor(1, 1, 1)
 		love.graphics.draw(ctx.map_tiles.image, floor_quad(tx, ty), x, y, 0, ctx.map_tiles.scale, ctx.map_tiles.scale)
 	end)
+end
+
+local function draw_pseudo_3d_scene(third_person)
+	local horizon = ctx.H * 0.48
+	love.graphics.setColor(0.08, 0.085, 0.095)
+	love.graphics.rectangle("fill", 0, 0, ctx.VIEW_W, horizon)
+	love.graphics.setColor(0.045, 0.048, 0.052)
+	love.graphics.rectangle("fill", 0, horizon, ctx.VIEW_W, ctx.H - horizon)
+
+	local fov = math.rad(68)
+	local max_dist = ctx.TILE * 28
+	local strip = 4
+	local cam_x, cam_y = ctx.player.x, ctx.player.y
+	if third_person then
+		cam_x = cam_x - math.cos(ctx.player.aim) * ctx.TILE * 3.2
+		cam_y = cam_y - math.sin(ctx.player.aim) * ctx.TILE * 3.2
+		if map.wall_at(ctx, cam_x, cam_y) then cam_x, cam_y = ctx.player.x, ctx.player.y end
+	end
+	local depth_buffer = {}
+	for sx = 0, ctx.VIEW_W - 1, strip do
+		local ratio = (sx + strip * 0.5) / ctx.VIEW_W - 0.5
+		local ray_angle = ctx.player.aim + ratio * fov
+		local hit_x, hit_y = map.cast_ray_from(ctx, cam_x, cam_y, ray_angle, max_dist)
+		local dist = ((hit_x - cam_x) ^ 2 + (hit_y - cam_y) ^ 2) ^ 0.5
+		local corrected = math.max(1, dist * math.cos(ray_angle - ctx.player.aim))
+		depth_buffer[math.floor(sx / strip) + 1] = corrected
+		local wall_h = math.min(ctx.H * 1.6, ctx.TILE * ctx.H * 1.15 / corrected)
+		local shade = math.max(0.13, 1 - corrected / max_dist)
+		local y = horizon - wall_h * 0.5
+		love.graphics.setColor(0.16 + shade * 0.58, 0.17 + shade * 0.56, 0.19 + shade * 0.52)
+		love.graphics.rectangle("fill", sx, y, strip + 1, wall_h)
+	end
+
+	local sprites = {}
+	local function add_sprite(actor, image, color, radius)
+		if not actor or (actor.alpha and actor.alpha <= 0.02) then return end
+		local dx, dy = actor.x - cam_x, actor.y - cam_y
+		local forward_x, forward_y = math.cos(ctx.player.aim), math.sin(ctx.player.aim)
+		local right_x, right_y = -forward_y, forward_x
+		local depth = dx * forward_x + dy * forward_y
+		if depth <= 12 then return end
+		local side = dx * right_x + dy * right_y
+		local x = ctx.VIEW_W / 2 + side / depth * (ctx.VIEW_W / (2 * math.tan(fov / 2)))
+		if x < -180 or x > ctx.VIEW_W + 180 then return end
+		local visible_depth = depth_buffer[math.floor(x / strip) + 1] or max_dist
+		if depth > visible_depth + ctx.TILE * 0.75 then return end
+		sprites[#sprites + 1] = { actor = actor, image = image, color = color, radius = radius or 12, x = x, depth = depth }
+	end
+	for _, mob in ipairs(ctx.mobs) do
+		add_sprite(mob, ctx.actor_images and ctx.actor_images[mob.type], mob.color, mob.r)
+	end
+	if ctx.seija then add_sprite(ctx.seija, ctx.actor_images and ctx.actor_images.seija, { 0.95, 0.55, 1.0 }, ctx.seija.r) end
+	if third_person then add_sprite(ctx.player, ctx.actor_images and ctx.actor_images[ctx.player.kind], { 0.35, 0.72, 0.95 }, ctx.player.r) end
+	table.sort(sprites, function(a, b) return a.depth > b.depth end)
+	for _, sprite in ipairs(sprites) do
+		local h = math.min(ctx.H * 0.35, ctx.TILE * ctx.H * 1.1 / sprite.depth)
+		local shade = math.max(0.35, 1 - sprite.depth / max_dist)
+		local alpha = (sprite.actor.alpha or 1) * math.min(1, shade + 0.35)
+		if sprite.image then
+			local scale = h / sprite.image:getHeight()
+			love.graphics.setColor(shade, shade, shade, alpha)
+			love.graphics.draw(sprite.image, sprite.x, horizon + h * 0.52, 0, scale, scale, sprite.image:getWidth() / 2, sprite.image:getHeight())
+		else
+			love.graphics.setColor(sprite.color[1] * shade, sprite.color[2] * shade, sprite.color[3] * shade, alpha)
+			love.graphics.rectangle("fill", sprite.x - h * 0.18, horizon - h * 0.32, h * 0.36, h * 0.86, 6, 6)
+			love.graphics.circle("fill", sprite.x, horizon - h * 0.42, h * 0.17)
+		end
+	end
 end
 
 local function draw_standing_actor(actor, color, alpha, aim, accent)
@@ -539,8 +631,7 @@ function love.update(dt)
 	ctx.sagume_call_cd = math.max(0, ctx.sagume_call_cd - dt)
 	ctx.help_popup = math.max(0, ctx.help_popup - dt)
 	effects.update_control_fx(ctx, dt)
-	local dx, dy = movement.input()
-	dx, dy = screen_input(dx, dy)
+	local dx, dy, move_scale = player_input(dt)
 	local input_len = math.sqrt(dx * dx + dy * dy)
 	local tx, ty = map.tile_of(ctx, ctx.player.x, ctx.player.y)
 	local on_ice = ctx.ice_by_key[tx .. "," .. ty] ~= nil
@@ -572,8 +663,13 @@ function love.update(dt)
 			moving = movement.move_player(ctx, ctx.player.slide.x, ctx.player.slide.y, (ctx.profiles[ctx.player.profile].speed + ctx.player.speed_bonus) * 0.75 * dt)
 			if not moving then ctx.player.slide = nil end
 		else
-			moving = movement.move_player(ctx, dx, dy, (ctx.profiles[ctx.player.profile].speed + ctx.player.speed_bonus) * dt)
+			moving = movement.move_player(ctx, dx, dy, (ctx.profiles[ctx.player.profile].speed + ctx.player.speed_bonus) * (move_scale or 1) * dt)
 		end
+	end
+	ctx.tank_afterimage_timer = math.max(0, ctx.tank_afterimage_timer - dt)
+	if ctx.settings.control_mode ~= "free" and moving and math.abs(ctx.player.tank_speed or 0) >= 0.8 and ctx.tank_afterimage_timer == 0 then
+		ctx.afterimages[#ctx.afterimages + 1] = { x = ctx.player.x, y = ctx.player.y, t = 0.16 }
+		ctx.tank_afterimage_timer = 0.06
 	end
 	if moving and ctx.move_sound_timer == 0 then
 		effects.play_sound(ctx, "move")
@@ -616,16 +712,18 @@ function love.update(dt)
 
 	ctx.camera.x = math.max(0, math.min(ctx.player.x - ctx.VIEW_W / 2, ctx.MAP_W * ctx.TILE - ctx.VIEW_W))
 	ctx.camera.y = math.max(0, math.min(ctx.player.y - ctx.H / 2, ctx.MAP_H * ctx.TILE - ctx.H))
-	local mx, my = love.mouse.getPosition()
-	mx = math.min(mx, ctx.VIEW_W)
-	mx, my = effects.diag_flip_to_canvas(ctx, mx, my)
-	local wx, wy = screen_to_world(mx, my)
-	local target_aim = atan2(wy - ctx.player.y, wx - ctx.player.x)
-	ctx.player.aim = ctx.player.aim + angle_diff(ctx.player.aim, target_aim) * math.min(1, ctx.player.aim_turn * dt)
+	if ctx.settings.control_mode == "free" then
+		local mx, my = love.mouse.getPosition()
+		mx = math.min(mx, ctx.VIEW_W)
+		mx, my = effects.diag_flip_to_canvas(ctx, mx, my)
+		local wx, wy = screen_to_world(mx, my)
+		local target_aim = atan2(wy - ctx.player.y, wx - ctx.player.x)
+		ctx.player.aim = ctx.player.aim + angle_diff(ctx.player.aim, target_aim) * math.min(1, ctx.player.aim_turn * dt)
+	end
 end
 
 function love.keypressed(key)
-	if key == "space" and not ctx.suika_event and ctx.player.groggy == 0 then movement.start_dash(ctx, screen_input(movement.input())) end
+	if key == "space" and not ctx.suika_event and ctx.player.groggy == 0 then movement.start_dash(ctx, player_input(0)) end
 	if key == "b" then
 		ask_briefing()
 	end
@@ -635,6 +733,10 @@ function love.keypressed(key)
 	if key == "g" then ctx.settings.distort_mode = ctx.settings.distort_mode == "wave" and "swirl" or "wave" end
 	if key == "v" then ctx.settings.fade_mode = ctx.settings.fade_mode % #ctx.fade_modes + 1 end
 	if key == "r" then reset_run() end
+	if key == "t" then
+		ctx.settings.control_mode = ({ free = "tank", tank = "tank_view", tank_view = "first_person", first_person = "third_person", third_person = "free" })[ctx.settings.control_mode] or "free"
+		ctx.state.prompt = ({ free = "Free controls.", tank = "Tank controls.", tank_view = "Tank view.", first_person = "First-person view.", third_person = "Third-person view." })[ctx.settings.control_mode]
+	end
 	if key == "h" then ctx.help_popup = 5 end
 	if key == "tab" then ctx.full_map_open = not ctx.full_map_open end
 	if key == "z" then
@@ -666,26 +768,30 @@ function love.draw()
 	love.graphics.setScissor(0, 0, ctx.VIEW_W, ctx.H)
 	love.graphics.push()
 	effects.apply_screen_fx(ctx)
-	love.graphics.translate(-ctx.camera.x, -ctx.camera.y)
+	if ctx.settings.control_mode == "first_person" or ctx.settings.control_mode == "third_person" then
+		draw_pseudo_3d_scene(ctx.settings.control_mode == "third_person")
+	else
+		love.graphics.translate(-ctx.camera.x, -ctx.camera.y)
 
-	local cull_c, cull_s = math.abs(math.cos(ctx.screen_fx.rot or 0)), math.abs(math.sin(ctx.screen_fx.rot or 0))
-	local cull_w = ctx.VIEW_W * cull_c + ctx.H * cull_s
-	local cull_h = ctx.VIEW_W * cull_s + ctx.H * cull_c
-	local cull_pad_x = math.max(0, (cull_w - ctx.VIEW_W) / 2)
-	local cull_pad_y = math.max(0, (cull_h - ctx.H) / 2)
-	local first_x = math.max(1, math.floor((ctx.camera.x - cull_pad_x) / ctx.TILE) + 1)
-	local last_x = math.min(ctx.MAP_W, math.floor((ctx.camera.x + ctx.VIEW_W + cull_pad_x) / ctx.TILE) + 2)
-	local first_y = math.max(1, math.floor((ctx.camera.y - cull_pad_y) / ctx.TILE) + 1)
-	local last_y = math.min(ctx.MAP_H, math.floor((ctx.camera.y + ctx.H + cull_pad_y) / ctx.TILE) + 2)
-	for y = first_y, last_y do
-		for x = first_x, last_x do
-			if ctx.map[y][x] == 0 then
-				draw_floor_tile(x, y)
-			elseif ctx.map[y][x] == 1 then
-				draw_wall_tile(x, y)
+		local view_rot = ctx.settings.control_mode == "tank_view" and (-math.pi / 2 - ctx.player.aim) or 0
+		local cull_c, cull_s = math.abs(math.cos((ctx.screen_fx.rot or 0) + view_rot)), math.abs(math.sin((ctx.screen_fx.rot or 0) + view_rot))
+		local cull_w = ctx.VIEW_W * cull_c + ctx.H * cull_s
+		local cull_h = ctx.VIEW_W * cull_s + ctx.H * cull_c
+		local cull_pad_x = math.max(0, (cull_w - ctx.VIEW_W) / 2)
+		local cull_pad_y = math.max(0, (cull_h - ctx.H) / 2)
+		local first_x = math.max(1, math.floor((ctx.camera.x - cull_pad_x) / ctx.TILE) + 1)
+		local last_x = math.min(ctx.MAP_W, math.floor((ctx.camera.x + ctx.VIEW_W + cull_pad_x) / ctx.TILE) + 2)
+		local first_y = math.max(1, math.floor((ctx.camera.y - cull_pad_y) / ctx.TILE) + 1)
+		local last_y = math.min(ctx.MAP_H, math.floor((ctx.camera.y + ctx.H + cull_pad_y) / ctx.TILE) + 2)
+		for y = first_y, last_y do
+			for x = first_x, last_x do
+				if ctx.map[y][x] == 0 then
+					draw_floor_tile(x, y)
+				elseif ctx.map[y][x] == 1 then
+					draw_wall_tile(x, y)
+				end
 			end
 		end
-	end
 
 	love.graphics.setColor(1, 0.95, 0.55, 0.22)
 	love.graphics.polygon("fill", vision.sight_polygon(ctx))
@@ -790,6 +896,7 @@ function love.draw()
 	})
 	table.sort(actors, function(a, b) return a.y < b.y end)
 	for _, actor in ipairs(actors) do actor.draw() end
+	end
 	love.graphics.pop()
 	love.graphics.setScissor()
 	effects.end_world_canvas(ctx)

@@ -395,8 +395,12 @@ function ui.draw_help_popup(ctx)
 	love.graphics.setColor(0.7, 0.74, 0.78, alpha)
 	love.graphics.rectangle("line", x, y, w, h, 6, 6)
 	love.graphics.print("Controls", x + 14, y + 12)
-	love.graphics.print("WASD: 이동    마우스: 시야", x + 14, y + 38)
-	love.graphics.print("스페이스: 스텝 대시", x + 14, y + 62)
+	local mode_line = ctx.settings.control_mode == "free" and "WASD: move    Mouse: aim"
+		or (ctx.settings.control_mode == "tank" and "W/S: drive    A/D: turn"
+		or (ctx.settings.control_mode == "tank_view" and "W/S: drive    A/D: turn+view"
+		or (ctx.settings.control_mode == "first_person" and "W/S: drive    A/D: first-person" or "W/S: drive    A/D: third-person")))
+	love.graphics.print(mode_line, x + 14, y + 38)
+	love.graphics.print("Space: 스텝 대시    T: 조작 전환", x + 14, y + 62)
 	love.graphics.print("B: 브리핑 호출", x + 14, y + 86)
 	love.graphics.print("H: 도움말    R: 새 맵", x + 14, y + 110)
 end

@@ -108,6 +108,15 @@ end
 
 function effects.canvas_to_screen(ctx, x, y, stable)
 	local fx = ctx.screen_fx
+	local view_mode = ctx.settings and ctx.settings.control_mode == "tank_view"
+	local view_rot = view_mode and (-math.pi / 2 - ctx.player.aim) or 0
+	local cx, cy = ctx.VIEW_W / 2, ctx.H / 2
+	if view_rot ~= 0 then
+		x, y = x - cx, y - cy
+		local vc, vs = math.cos(view_rot), math.sin(view_rot)
+		x, y = x * vc - y * vs, x * vs + y * vc
+		x, y = x + cx, y + cy
+	end
 	if fx.diag_flip and fx.rot_time then
 		local pad_x, pad_y = (ctx.flip_size - ctx.VIEW_W) / 2, (ctx.flip_size - ctx.H) / 2
 		local u, v = (x + pad_x) / ctx.flip_size, (y + pad_y) / ctx.flip_size
@@ -120,7 +129,6 @@ function effects.canvas_to_screen(ctx, x, y, stable)
 			y1 * (1 - v) + y3 * u + y4 * (v - u)
 	end
 
-	local cx, cy = ctx.VIEW_W / 2, ctx.H / 2
 	x, y = x - cx, y - cy
 	x, y = x * (fx.sx or 1), y * (fx.sy or 1)
 	local c, s = math.cos(fx.rot or 0), math.sin(fx.rot or 0)
@@ -306,6 +314,9 @@ function effects.apply_screen_fx(ctx)
 		local t, s = ctx.drunk_fx.time, ctx.drunk_fx.strength
 		love.graphics.translate(math.sin(t * 2.4) * 12 * s, math.cos(t * 1.9) * 9 * s)
 		love.graphics.rotate(math.sin(t * 1.5) * 0.3 * s)
+	end
+	if ctx.settings and ctx.settings.control_mode == "tank_view" then
+		love.graphics.rotate(-math.pi / 2 - ctx.player.aim)
 	end
 	love.graphics.rotate(ctx.screen_fx.rot or 0)
 	love.graphics.scale(ctx.screen_fx.sx, ctx.screen_fx.sy)
