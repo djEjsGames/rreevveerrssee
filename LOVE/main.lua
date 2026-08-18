@@ -24,7 +24,7 @@ local colors = {
   merger = { 0.52, 0.34, 0.22 },
 }
 
-local board, sources, dests, flows, cargo, selected, placementRotation, paused, debug, status
+local board, sources, dests, flows, cargo, selected, placementRotation, paused, debug, status, unlimitedStock
 local nextCargoId = 1
 local dirty = true
 local splitState = {}
@@ -35,6 +35,17 @@ local cameraX, cameraY, zoom = 0, 0, 1
 local cameraSpeed = 360
 local simTime = 0
 local replayEvents = {}
+local pendingDisturbance = nil
+local disturbanceDelay = 3
+local disturbanceTweenDuration = 1
+local disturbanceEffects = {
+  { id = "rotate_cw", label = "Rotate +90" },
+  { id = "rotate_ccw", label = "Rotate -90" },
+  { id = "flip_h", label = "Flip Horizontal" },
+  { id = "flip_v", label = "Flip Vertical" },
+  { id = "flip_diag_main", label = "Flip Diagonal \\" },
+  { id = "flip_diag_anti", label = "Flip Diagonal /" },
+}
 
 local function key(x, y) return x .. "," .. y end
 local function laneKey(x, y, entry, exit) return x .. "," .. y .. "," .. entry .. "," .. exit end
@@ -216,16 +227,94 @@ end
 
 local function visualRotation(tile)
   if tile.tweenTime then
-    local t = math.min(1, tile.tweenTime / rotateTweenDuration)
+    local t = math.min(1, tile.tweenTime / (tile.tweenDuration or rotateTweenDuration))
     return tile.tweenFrom + (tile.tweenTo - tile.tweenFrom) * easeOutQuint(t)
   end
   return tile.rotation
 end
 
-local function rotateTile(tile)
+local function rotateTile(tile, turns, duration)
+  turns = turns or 1
   local from = visualRotation(tile)
-  tile.rotation = (tile.rotation + 1) % 4
-  tile.tweenFrom, tile.tweenTo, tile.tweenTime = from, from + 1, 0
+  tile.rotation = (tile.rotation + turns) % 4
+  tile.tweenFrom, tile.tweenTo, tile.tweenTime, tile.tweenDuration = from, from + turns, 0, duration or rotateTweenDuration
+end
+
+local function dirIndex(d)
+  for i, name in ipairs(dirs) do if name == d then return i - 1 end end
+  return 0
+end
+
+local function transformDir(d, effect)
+  if effect == "rotate_cw" then return ({ N = "E", E = "S", S = "W", W = "N" })[d] end
+  if effect == "rotate_ccw" then return ({ N = "W", W = "S", S = "E", E = "N" })[d] end
+  if effect == "flip_h" then return ({ N = "N", E = "W", S = "S", W = "E" })[d] end
+  if effect == "flip_v" then return ({ N = "S", E = "E", S = "N", W = "W" })[d] end
+  if effect == "flip_diag_main" then return ({ N = "W", E = "S", S = "E", W = "N" })[d] end
+  if effect == "flip_diag_anti" then return ({ N = "E", E = "N", S = "W", W = "S" })[d] end
+  return d
+end
+
+local function transformLocal(lx, ly, effect)
+  if effect == "rotate_cw" then return rotateLocal(lx, ly, 1) end
+  if effect == "rotate_ccw" then return rotateLocal(lx, ly, -1) end
+  if effect == "flip_h" then return -lx, ly end
+  if effect == "flip_v" then return lx, -ly end
+  if effect == "flip_diag_main" then return ly, lx end
+  if effect == "flip_diag_anti" then return -ly, -lx end
+  return lx, ly
+end
+
+local function transformRegionLocal(gx, gy, size, effect)
+  if effect == "rotate_cw" then return size - gy, gx end
+  if effect == "rotate_ccw" then return gy, size - gx end
+  if effect == "flip_h" then return size - gx, gy end
+  if effect == "flip_v" then return gx, size - gy end
+  if effect == "flip_diag_main" then return gy, gx end
+  if effect == "flip_diag_anti" then return size - gy, size - gx end
+  return gx, gy
+end
+
+local function tweenRegionLocal(gx, gy, size, effect, t)
+  if effect == "rotate_cw" or effect == "rotate_ccw" then
+    local a = (effect == "rotate_cw" and 1 or -1) * math.pi * 0.5 * t
+    local cx, cy = size * 0.5, size * 0.5
+    local lx, ly = gx - cx, gy - cy
+    return cx + lx * math.cos(a) - ly * math.sin(a), cy + lx * math.sin(a) + ly * math.cos(a)
+  end
+  local tx, ty = transformRegionLocal(gx, gy, size, effect)
+  return gx + (tx - gx) * t, gy + (ty - gy) * t
+end
+
+local function regionPointToCell(x, y, size, gx, gy)
+  local ix = math.max(0, math.min(size - 1, math.floor(gx)))
+  local iy = math.max(0, math.min(size - 1, math.floor(gy)))
+  return x + ix, y + iy, gx - ix - 0.5, gy - iy - 0.5
+end
+
+local function samePortSet(a, b, c, d)
+  return (a == c and b == d) or (a == d and b == c)
+end
+
+local function tileRotationAfterEffect(tile, effect)
+  local r = tile.rotation % 4
+  if tile.type == "corner" then
+    local a, b = transformDir(dirs[r + 1], effect), transformDir(dirs[(r + 1) % 4 + 1], effect)
+    for nr = 0, 3 do
+      if samePortSet(a, b, dirs[nr + 1], dirs[(nr + 1) % 4 + 1]) then return nr end
+    end
+  elseif tile.type == "bridge" then
+    return r
+  end
+  return dirIndex(transformDir(dirs[r + 1], effect))
+end
+
+local function transformTileRotation(tile, effect)
+  if effect == "rotate_cw" then return rotateTile(tile, 1, disturbanceTweenDuration) end
+  if effect == "rotate_ccw" then return rotateTile(tile, -1, disturbanceTweenDuration) end
+  tile.effectTween = { effect = effect, fromRotation = visualRotation(tile), time = 0, duration = disturbanceTweenDuration }
+  tile.rotation = tileRotationAfterEffect(tile, effect)
+  tile.tweenFrom, tile.tweenTo, tile.tweenTime = nil, nil, nil
 end
 
 local function updateTileTweens(dt)
@@ -234,9 +323,17 @@ local function updateTileTweens(dt)
       local tile = board[y][x]
       if tile.kind == "tile" and tile.tweenTime then
         tile.tweenTime = tile.tweenTime + dt
-        if tile.tweenTime >= rotateTweenDuration then
-          tile.tweenFrom, tile.tweenTo, tile.tweenTime = nil, nil, nil
+        if tile.tweenTime >= (tile.tweenDuration or rotateTweenDuration) then
+          tile.tweenFrom, tile.tweenTo, tile.tweenTime, tile.tweenDuration = nil, nil, nil, nil
         end
+      end
+      if tile.kind == "tile" and tile.effectTween then
+        tile.effectTween.time = tile.effectTween.time + dt
+        if tile.effectTween.time >= tile.effectTween.duration then tile.effectTween = nil end
+      end
+      if tile.kind == "tile" and tile.regionTween then
+        tile.regionTween.time = tile.regionTween.time + dt
+        if tile.regionTween.time >= tile.regionTween.duration then tile.regionTween = nil end
       end
     end
   end
@@ -246,7 +343,15 @@ local function updateCargoTweens(dt)
   for _, c in ipairs(cargo) do
     if c.rotateTween then
       c.rotateTween.time = c.rotateTween.time + dt
-      if c.rotateTween.time >= rotateTweenDuration then c.rotateTween = nil end
+      if c.rotateTween.time >= (c.rotateTween.duration or rotateTweenDuration) then c.rotateTween = nil end
+    end
+    if c.effectTween then
+      c.effectTween.time = c.effectTween.time + dt
+      if c.effectTween.time >= c.effectTween.duration then c.effectTween = nil end
+    end
+    if c.regionTween then
+      c.regionTween.time = c.regionTween.time + dt
+      if c.regionTween.time >= c.regionTween.duration then c.regionTween = nil end
     end
   end
 end
@@ -430,16 +535,43 @@ local function remapWaitingCargo()
   end
 end
 
-local function rotateCargoInCell(x, y)
+local function transformCargoInCell(x, y, effect, duration)
   for _, c in ipairs(cargo) do
     if cargoInCell(c, x, y) then
       local lx, ly = cargoLocal(c)
-      local rx, ry = rotateLocal(lx, ly, 1)
-      c.rotateTween = { x = x, y = y, lx = lx, ly = ly, time = 0 }
+      local rx, ry = transformLocal(lx, ly, effect)
+      if effect == "rotate_cw" or effect == "rotate_ccw" then
+        c.rotateTween = { x = x, y = y, lx = lx, ly = ly, turns = effect == "rotate_cw" and 1 or -1, time = 0, duration = duration or rotateTweenDuration }
+      else
+        c.effectTween = { x = x, y = y, lx = lx, ly = ly, tx = rx, ty = ry, time = 0, duration = duration or disturbanceTweenDuration }
+      end
       rememberCargoPoint(c, x, y, rx, ry)
       c.state = "waiting"
     end
   end
+end
+
+local function transformCargoInRegion(d)
+  for _, c in ipairs(cargo) do
+    if c.state ~= "removed" then
+      local lane = flows.lanes[c.lane] or c.visualLane
+      local x, y = lane and lane.x or c.cellX, lane and lane.y or c.cellY
+      if x and y and x >= d.x and y >= d.y and x < d.x + d.size and y < d.y + d.size then
+        local lx, ly = cargoLocal(c)
+        local gx, gy = x - d.x + 0.5, y - d.y + 0.5
+        local tx, ty = transformRegionLocal(gx, gy, d.size, d.effect)
+        local nx, ny = regionPointToCell(d.x, d.y, d.size, tx, ty)
+        local nlx, nly = transformLocal(lx, ly, d.effect)
+        c.regionTween = { x = d.x, y = d.y, size = d.size, effect = d.effect, gx = gx, gy = gy, lx = lx, ly = ly, time = 0, duration = disturbanceTweenDuration }
+        rememberCargoPoint(c, nx, ny, nlx, nly)
+        c.state = "waiting"
+      end
+    end
+  end
+end
+
+local function rotateCargoInCell(x, y)
+  transformCargoInCell(x, y, "rotate_cw")
 end
 
 local function laneAfter(lane)
@@ -477,7 +609,7 @@ end
 local function spawn(dt)
   for _, s in ipairs(sources) do
     s.timer = s.timer + dt
-    if s.timer >= s.interval and (s.remaining == -1 or s.remaining > 0) then
+    if s.timer >= s.interval and (unlimitedStock or s.remaining == -1 or s.remaining > 0) then
       local sourceLanes = flows.sourceLanes[s.id]
       local lk = sourceLanes and sourceLanes[1]
       if sourceLanes and #sourceLanes > 1 then
@@ -491,7 +623,7 @@ local function spawn(dt)
         local lane = flows.lanes[lk]
         cargo[#cargo + 1] = { id = nextCargoId, type = s.cargoType, source = s.id, lane = lk, visualLane = laneSnapshot(lane), cellX = lane.x, cellY = lane.y, progress = 0, speed = 1.5, state = "moving" }
         nextCargoId = nextCargoId + 1
-        if s.remaining > 0 then s.remaining = s.remaining - 1 end
+        if not unlimitedStock and s.remaining > 0 then s.remaining = s.remaining - 1 end
         s.timer = 0
       end
     end
@@ -559,7 +691,7 @@ local function checkStatus()
   end
   for _, c in ipairs(cargo) do if c.state ~= "removed" then need[c.type] = (need[c.type] or 0) - 1 end end
   for _, s in ipairs(sources) do
-    if s.remaining == -1 then need[s.cargoType] = -999999 else need[s.cargoType] = (need[s.cargoType] or 0) - s.remaining end
+    if unlimitedStock or s.remaining == -1 then need[s.cargoType] = -999999 else need[s.cargoType] = (need[s.cargoType] or 0) - s.remaining end
   end
   for _, n in pairs(need) do if n > 0 then status = "failure"; return end end
   status = "running"
@@ -637,16 +769,62 @@ local function drawPlacementPanel()
   end
 end
 
-local function drawTile(x, y, cell)
+local function transformedDrawPoint(cx, cy, d, radius, tween)
+  local lx, ly = rotateLocal(dx[d] * radius / CELL, dy[d] * radius / CELL, tween.fromRotation)
+  local tx, ty = transformLocal(lx, ly, tween.effect)
+  local t = easeOutQuint(math.min(1, tween.time / tween.duration))
+  return cx + (lx + (tx - lx) * t) * CELL, cy + (ly + (ty - ly) * t) * CELL
+end
+
+local function tileDrawPoint(cx, cy, d, rot, tween)
+  if tween then return transformedDrawPoint(cx, cy, d, PORT_RADIUS, tween) end
+  return drawPoint(cx, cy, d, PORT_RADIUS, rot)
+end
+
+local function tileVisualCenter(x, y, cell)
+  if cell.regionTween then
+    local rt = cell.regionTween
+    local t = easeOutQuint(math.min(1, rt.time / rt.duration))
+    local gx, gy = tweenRegionLocal(rt.gx, rt.gy, rt.size, rt.effect, t)
+    return OX + (rt.x + gx - 1) * CELL, OY + (rt.y + gy - 1) * CELL
+  end
+  return center(x, y)
+end
+
+local function regionTweenPoint(rt, lx, ly)
+  local t = easeOutQuint(math.min(1, rt.time / rt.duration))
+  local gx, gy = tweenRegionLocal(rt.gx + lx, rt.gy + ly, rt.size, rt.effect, t)
+  return OX + (rt.x + gx - 1) * CELL, OY + (rt.y + gy - 1) * CELL
+end
+
+local function dirLocalPoint(d, rot)
+  return rotateLocal(dx[d] * 0.5, dy[d] * 0.5, rot)
+end
+
+local function regionBaseRotation(cell)
+  if cell.tweenFrom then return cell.tweenFrom end
+  if cell.effectTween then return cell.effectTween.fromRotation end
+  return cell.rotation
+end
+
+local function drawRegionTile(cell)
+  local rt = cell.regionTween
+  local x1, y1 = regionTweenPoint(rt, -0.5, -0.5)
+  local x2, y2 = regionTweenPoint(rt, 0.5, -0.5)
+  local x3, y3 = regionTweenPoint(rt, 0.5, 0.5)
+  local x4, y4 = regionTweenPoint(rt, -0.5, 0.5)
   love.graphics.setColor(tileColor(cell))
-  love.graphics.rectangle("fill", OX + (x - 1) * CELL, OY + (y - 1) * CELL, CELL - 1, CELL - 1)
-  local cx, cy = center(x, y)
+  love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
+
+  local cx, cy = regionTweenPoint(rt, 0, 0)
   love.graphics.setColor(0.86, 0.88, 0.8)
   love.graphics.print(cell.type:sub(1, 1):upper(), cx - 4, cy - 8)
-  local rot = visualRotation(cell)
+  local rot = regionBaseRotation(cell)
   for _, segment in ipairs(baseTileSegments(cell.type)) do
-    local ax, ay = drawPoint(cx, cy, segment[1], PORT_RADIUS, rot)
-    local bx, by = drawPoint(cx, cy, segment[2], PORT_RADIUS, rot)
+    local axl, ayl = dirLocalPoint(segment[1], rot)
+    local bxl, byl = dirLocalPoint(segment[2], rot)
+    local ax, ay = regionTweenPoint(rt, axl, ayl)
+    local bx, by = regionTweenPoint(rt, bxl, byl)
     if cell.type == "corner" then
       love.graphics.line(ax, ay, cx, cy)
       love.graphics.line(cx, cy, bx, by)
@@ -657,12 +835,45 @@ local function drawTile(x, y, cell)
   local inputs, outputs = baseTilePorts(cell.type)
   love.graphics.setColor(0.1, 0.12, 0.13)
   for _, d in ipairs(inputs) do
-    local px, py = drawPoint(cx, cy, d, PORT_RADIUS, rot)
+    local pxl, pyl = dirLocalPoint(d, rot)
+    local px, py = regionTweenPoint(rt, pxl, pyl)
     love.graphics.rectangle("fill", px - 5, py - 5, 10, 10)
   end
   love.graphics.setColor(1, 0.86, 0.28)
   for _, d in ipairs(outputs) do
-    local px, py = drawPoint(cx, cy, d, PORT_RADIUS, rot)
+    local pxl, pyl = dirLocalPoint(d, rot)
+    local px, py = regionTweenPoint(rt, pxl, pyl)
+    love.graphics.circle("fill", px, py, 5)
+  end
+end
+
+local function drawTile(x, y, cell)
+  if cell.regionTween then return drawRegionTile(cell) end
+  local cx, cy = tileVisualCenter(x, y, cell)
+  love.graphics.setColor(tileColor(cell))
+  love.graphics.rectangle("fill", cx - CELL * 0.5, cy - CELL * 0.5, CELL - 1, CELL - 1)
+  love.graphics.setColor(0.86, 0.88, 0.8)
+  love.graphics.print(cell.type:sub(1, 1):upper(), cx - 4, cy - 8)
+  local rot = visualRotation(cell)
+  for _, segment in ipairs(baseTileSegments(cell.type)) do
+    local ax, ay = tileDrawPoint(cx, cy, segment[1], rot, cell.effectTween)
+    local bx, by = tileDrawPoint(cx, cy, segment[2], rot, cell.effectTween)
+    if cell.type == "corner" then
+      love.graphics.line(ax, ay, cx, cy)
+      love.graphics.line(cx, cy, bx, by)
+    else
+      love.graphics.line(ax, ay, bx, by)
+    end
+  end
+  local inputs, outputs = baseTilePorts(cell.type)
+  love.graphics.setColor(0.1, 0.12, 0.13)
+  for _, d in ipairs(inputs) do
+    local px, py = tileDrawPoint(cx, cy, d, rot, cell.effectTween)
+    love.graphics.rectangle("fill", px - 5, py - 5, 10, 10)
+  end
+  love.graphics.setColor(1, 0.86, 0.28)
+  for _, d in ipairs(outputs) do
+    local px, py = tileDrawPoint(cx, cy, d, rot, cell.effectTween)
     love.graphics.circle("fill", px, py, 5)
   end
 end
@@ -692,10 +903,23 @@ end
 local function drawCargo()
   for _, c in ipairs(cargo) do
     if c.state ~= "removed" then
-      if c.rotateTween then
-        local t = math.min(1, c.rotateTween.time / rotateTweenDuration)
-        local lx, ly = rotateLocal(c.rotateTween.lx, c.rotateTween.ly, easeOutQuint(t))
+      if c.regionTween then
+        local rt = c.regionTween
+        local t = easeOutQuint(math.min(1, rt.time / rt.duration))
+        local gx, gy = tweenRegionLocal(rt.gx + (rt.lx or 0), rt.gy + (rt.ly or 0), rt.size, rt.effect, t)
+        love.graphics.setColor(c.state == "waiting" and colors.block or colors.cargo)
+        love.graphics.circle("fill", OX + (rt.x + gx - 1) * CELL, OY + (rt.y + gy - 1) * CELL, 8)
+      elseif c.rotateTween then
+        local t = math.min(1, c.rotateTween.time / (c.rotateTween.duration or rotateTweenDuration))
+        local lx, ly = rotateLocal(c.rotateTween.lx, c.rotateTween.ly, (c.rotateTween.turns or 1) * easeOutQuint(t))
         local cx, cy = center(c.rotateTween.x, c.rotateTween.y)
+        love.graphics.setColor(c.state == "waiting" and colors.block or colors.cargo)
+        love.graphics.circle("fill", cx + lx * CELL, cy + ly * CELL, 8)
+      elseif c.effectTween then
+        local t = easeOutQuint(math.min(1, c.effectTween.time / c.effectTween.duration))
+        local cx, cy = center(c.effectTween.x, c.effectTween.y)
+        local lx = c.effectTween.lx + (c.effectTween.tx - c.effectTween.lx) * t
+        local ly = c.effectTween.ly + (c.effectTween.ty - c.effectTween.ly) * t
         love.graphics.setColor(c.state == "waiting" and colors.block or colors.cargo)
         love.graphics.circle("fill", cx + lx * CELL, cy + ly * CELL, 8)
       else
@@ -714,10 +938,150 @@ local function drawCargo()
   end
 end
 
+local function regionHasActiveLane(x, y, size)
+  for yy = y, y + size - 1 do
+    for xx = x, x + size - 1 do
+      if board[yy][xx].kind == "source" or board[yy][xx].kind == "dest" then return false end
+    end
+  end
+  for _, lane in pairs(flows.lanes) do
+    if not lane.blocked and lane.x >= x and lane.y >= y and lane.x < x + size and lane.y < y + size then
+      return true
+    end
+  end
+  return false
+end
+
+local function randomDisturbanceRegion()
+  local size = math.random(2, 3)
+  for _ = 1, 80 do
+    local x, y = math.random(1, W - size + 1), math.random(1, H - size + 1)
+    if regionHasActiveLane(x, y, size) then return x, y, size end
+  end
+  return nil
+end
+
+local function startDisturbance()
+  if dirty then recalcFlow() end
+  local x, y, size = randomDisturbanceRegion()
+  if not x then return end
+  local effect = disturbanceEffects[math.random(1, #disturbanceEffects)]
+  pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = disturbanceDelay, phase = "alert" }
+  replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = effect.id }
+end
+
+local function applyDisturbance(d)
+  transformCargoInRegion(d)
+  local moved = {}
+  for y = d.y, d.y + d.size - 1 do
+    for x = d.x, d.x + d.size - 1 do
+      local cell = board[y][x]
+      local gx, gy = x - d.x + 0.5, y - d.y + 0.5
+      local tx, ty = transformRegionLocal(gx, gy, d.size, d.effect)
+      local nx, ny = regionPointToCell(d.x, d.y, d.size, tx, ty)
+      moved[key(nx, ny)] = cell
+      if cell.kind == "tile" then
+        cell.regionTween = { x = d.x, y = d.y, size = d.size, effect = d.effect, gx = gx, gy = gy, time = 0, duration = disturbanceTweenDuration }
+        transformTileRotation(cell, d.effect)
+      end
+    end
+  end
+  for y = d.y, d.y + d.size - 1 do
+    for x = d.x, d.x + d.size - 1 do board[y][x] = moved[key(x, y)] or { kind = "empty" } end
+  end
+  dirty = true
+  recalcFlow()
+  for y = d.y, d.y + d.size - 1 do
+    for x = d.x, d.x + d.size - 1 do remapCargoInCell(x, y) end
+  end
+  replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_apply", x = d.x, y = d.y, size = d.size, effect = d.effect }
+end
+
+local function updateDisturbance(dt)
+  if not pendingDisturbance then return end
+  pendingDisturbance.timer = pendingDisturbance.timer - dt
+  if pendingDisturbance.phase == "alert" and pendingDisturbance.timer <= 0 then
+    applyDisturbance(pendingDisturbance)
+    pendingDisturbance.phase = "animating"
+    pendingDisturbance.timer = disturbanceTweenDuration
+  elseif pendingDisturbance.phase == "animating" and pendingDisturbance.timer <= 0 then
+    pendingDisturbance = nil
+  end
+end
+
+local function disturbanceLocksSimulation()
+  return pendingDisturbance and pendingDisturbance.phase == "animating"
+end
+
+local function disturbanceGlyph(effect)
+  if effect == "rotate_cw" then return "+90" end
+  if effect == "rotate_ccw" then return "-90" end
+  if effect == "flip_h" then return "<>" end
+  if effect == "flip_v" then return "^v" end
+  if effect == "flip_diag_main" then return "\\" end
+  if effect == "flip_diag_anti" then return "/" end
+  return "?"
+end
+
+local function previewLocalPoint(lx, ly, effect, t)
+  if effect == "rotate_cw" then return rotateLocal(lx, ly, t) end
+  if effect == "rotate_ccw" then return rotateLocal(lx, ly, -t) end
+  local tx, ty = transformLocal(lx, ly, effect)
+  return lx + (tx - lx) * t, ly + (ty - ly) * t
+end
+
+local function drawDisturbancePreviewQuad(d)
+  if d.phase ~= "alert" then return end
+  local t = easeOutQuint(simTime % 1)
+  local cx = OX + (d.x + d.size * 0.5 - 1) * CELL
+  local cy = OY + (d.y - 1) * CELL - CELL * 0.62
+  local s = CELL * 0.78
+  local function p(lx, ly)
+    local x, y = previewLocalPoint(lx, ly, d.effect, t)
+    return cx + x * s, cy + y * s
+  end
+  local x1, y1 = p(-0.5, -0.5)
+  local x2, y2 = p(0.5, -0.5)
+  local x3, y3 = p(0.5, 0.5)
+  local x4, y4 = p(-0.5, 0.5)
+  love.graphics.setColor(1, 0.86, 0.28, 0.18)
+  love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
+  love.graphics.setColor(1, 0.86, 0.28, 0.95)
+  love.graphics.setLineWidth(2)
+  love.graphics.polygon("line", x1, y1, x2, y2, x3, y3, x4, y4)
+  local ax, ay = p(-0.5, 0)
+  local mx, my = p(0, 0)
+  local bx, by = p(0, -0.5)
+  love.graphics.line(ax, ay, mx, my)
+  love.graphics.line(mx, my, bx, by)
+  love.graphics.print(disturbanceGlyph(d.effect), cx - 10, cy - 8)
+end
+
+local function drawDisturbanceAlertWorld()
+  if not pendingDisturbance then return end
+  local d = pendingDisturbance
+  love.graphics.setColor(1, 0.16, 0.12, 0.22)
+  love.graphics.rectangle("fill", OX + (d.x - 1) * CELL, OY + (d.y - 1) * CELL, d.size * CELL, d.size * CELL)
+  love.graphics.setColor(1, 0.16, 0.12)
+  love.graphics.setLineWidth(4)
+  love.graphics.rectangle("line", OX + (d.x - 1) * CELL, OY + (d.y - 1) * CELL, d.size * CELL, d.size * CELL)
+  if d.phase == "alert" then
+    drawDisturbancePreviewQuad(d)
+  end
+  love.graphics.setLineWidth(1)
+end
+
+local function drawDisturbanceAlertUi()
+  if not pendingDisturbance then return end
+  love.graphics.setColor(1, 0.25, 0.18)
+  local prefix = pendingDisturbance.phase == "animating" and "EFFECT " or "ALERT "
+  love.graphics.print(prefix .. pendingDisturbance.label .. " " .. pendingDisturbance.size .. "x" .. pendingDisturbance.size .. " in " .. string.format("%.1f", pendingDisturbance.timer), 620, 18)
+end
+
 local function exportDebugState()
   local lines = {
     "Nitori Factory Debug State",
-    "scenario=" .. scenario .. " status=" .. status .. " paused=" .. tostring(paused),
+    "scenario=" .. scenario .. " status=" .. status .. " paused=" .. tostring(paused) .. " unlimitedStock=" .. tostring(unlimitedStock),
     "selected=" .. names[selected] .. " placementRotation=" .. placementRotation .. " zoom=" .. string.format("%.2f", zoom),
     "",
     "Board:",
@@ -771,6 +1135,7 @@ local function exportReplayDump()
     "  elapsed = " .. string.format("%.3f", simTime) .. ",",
     "  scenario = " .. scenario .. ",",
     "  status = " .. q(status) .. ",",
+    "  unlimitedStock = " .. tostring(unlimitedStock) .. ",",
     "  events = {",
   }
   for _, e in ipairs(replayEvents) do
@@ -780,6 +1145,10 @@ local function exportReplayDump()
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, tile = %s, rotation = %d },", e.t, q(e.action), e.x, e.y, q(e.tile), e.rotation)
     elseif e.action == "remove" or e.action == "rotate" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d },", e.t, q(e.action), e.x, e.y)
+    elseif e.action == "disturbance_alert" or e.action == "disturbance_apply" then
+      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, size = %d, effect = %s },", e.t, q(e.action), e.x, e.y, e.size, q(e.effect))
+    elseif e.action == "unlimited_stock" then
+      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, enabled = %s },", e.t, q(e.action), tostring(e.enabled))
     end
   end
   lines[#lines + 1] = "  },"
@@ -810,13 +1179,15 @@ local function exportReplayDump()
 end
 
 function love.load()
+  math.randomseed(os.time())
   love.graphics.setFont(love.graphics.newFont(13))
-  selected, placementRotation, paused, debug = 1, 0, false, true
+  selected, placementRotation, paused, debug, unlimitedStock = 1, 0, false, true, false
   loadScenario(1)
 end
 
 function love.update(dt)
   simTime = simTime + dt
+  updateDisturbance(dt)
   if dirty then
     recalcFlow()
   end
@@ -828,7 +1199,7 @@ function love.update(dt)
   if love.keyboard.isDown("d") then cameraX = cameraX - move end
   if love.keyboard.isDown("w") then cameraY = cameraY + move end
   if love.keyboard.isDown("s") then cameraY = cameraY - move end
-  if not paused then
+  if not paused and not disturbanceLocksSimulation() then
     if status == "running" then spawn(dt) end
     moveCargo(dt)
     if status == "running" then checkStatus() end
@@ -838,8 +1209,8 @@ end
 function love.draw()
   love.graphics.clear(colors.bg)
   love.graphics.setColor(colors.text)
-  love.graphics.print("Wheel: zoom  WASD: camera  Left: place/replace  Right: remove  R: rotate  Space: pause  `: debug  C: copy state  V: replay  F: flow  Tab: scenario", 24, 18)
-  love.graphics.print("Selected: " .. names[selected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation) .. "   Zoom: " .. string.format("%.2f", zoom) .. "   Scenario: " .. scenario .. "   State: " .. status .. (paused and " paused" or ""), 24, 42)
+  love.graphics.print("Wheel: zoom  WASD: camera  Left: place/replace  Right: remove  R: rotate  B: disturbance  U: unlimited stock  Space: pause  `: debug  C: copy state  V: replay  F: flow  Tab: scenario", 24, 18)
+  love.graphics.print("Selected: " .. names[selected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation) .. "   Zoom: " .. string.format("%.2f", zoom) .. "   Scenario: " .. scenario .. "   State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario"), 24, 42)
 
   local hx, hy = cellAt(love.mouse.getPosition())
   love.graphics.push()
@@ -870,17 +1241,19 @@ function love.draw()
     love.graphics.rectangle("line", OX + (hx - 1) * CELL + 2, OY + (hy - 1) * CELL + 2, CELL - 4, CELL - 4, 4, 4)
     love.graphics.setLineWidth(1)
   end
+  drawDisturbanceAlertWorld()
   if debug then drawFlow() end
   drawCargo()
   love.graphics.pop()
   drawPlacementPanel()
+  drawDisturbanceAlertUi()
 
   local panelX = OX + W * CELL + 24
   love.graphics.setColor(colors.text)
   love.graphics.print("Sources", panelX, OY)
   local line = 1
   for _, s in ipairs(sources) do
-    love.graphics.print(s.id .. " " .. s.cargoType .. " stock:" .. tostring(s.remaining), panelX, OY + line * 20)
+    love.graphics.print(s.id .. " " .. s.cargoType .. " stock:" .. (unlimitedStock and "unlimited" or tostring(s.remaining)), panelX, OY + line * 20)
     line = line + 1
   end
   line = line + 1
@@ -921,6 +1294,11 @@ function love.keypressed(k)
   if k == "`" or k == "grave" then debug = not debug end
   if k == "c" then exportDebugState() end
   if k == "v" then exportReplayDump() end
+  if k == "b" then startDisturbance() end
+  if k == "u" then
+    unlimitedStock = not unlimitedStock
+    replayEvents[#replayEvents + 1] = { t = simTime, action = "unlimited_stock", enabled = unlimitedStock }
+  end
   if k == "f" then dirty = true end
   if k == "tab" then loadScenario(scenario % 3 + 1) end
   if k == "r" then
