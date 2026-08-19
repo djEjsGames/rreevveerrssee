@@ -20,10 +20,12 @@ Remove-Item -LiteralPath $pages -Recurse -Force
 Copy-Item -LiteralPath $webPlay -Destination $pages -Recurse
 
 $index = Join-Path $pages "index.html"
+$buildVersion = (git -C $root rev-parse --short HEAD).Trim() + " / " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss K")
 $bridge = @'
 <script>
 (function () {
   const originalOpen = window.open.bind(window);
+  const BUILD_VERSION = "__NITORI_BUILD_VERSION__";
 
   function stopGameInput(el) {
     ["keydown", "keyup", "keypress", "mousedown", "mouseup", "mousemove", "wheel", "touchstart", "touchmove"].forEach((name) => {
@@ -49,6 +51,13 @@ $bridge = @'
     const select = document.createElement("button");
     select.textContent = "Select all";
 
+    const issue = document.createElement("button");
+    issue.textContent = "GitHub issue";
+
+    const status = document.createElement("span");
+    status.id = "nitori-dump-status";
+    status.style.cssText = "color:#bfc4c8;font-size:12px;";
+
     const close = document.createElement("button");
     close.textContent = "Close";
 
@@ -58,10 +67,25 @@ $bridge = @'
     textarea.style.cssText = "flex:1;box-sizing:border-box;width:100%;resize:none;border:0;outline:0;padding:14px;background:#111;color:#f3f3e8;font:13px Consolas,monospace;line-height:1.35;white-space:pre;";
 
     select.addEventListener("click", () => { textarea.focus(); textarea.select(); });
+    issue.addEventListener("click", () => {
+      const titleText = "Nitori Factory Dump - " + new Date().toISOString().slice(0, 19).replace("T", " ");
+      const body = "Build: " + BUILD_VERSION + "\nURL: " + location.href + "\nUser-Agent: " + navigator.userAgent + "\n\n" + textarea.value;
+      const issueBase = "https://github.com/djEjsGames/rreevveerrssee/issues/new";
+      const fullUrl = issueBase + "?title=" + encodeURIComponent(titleText) + "&body=" + encodeURIComponent(body);
+      if (fullUrl.length < 7500) {
+        originalOpen(fullUrl, "_blank", "noopener");
+        status.textContent = "Issue tab opened with body.";
+      } else {
+        textarea.focus();
+        textarea.select();
+        originalOpen(issueBase + "?title=" + encodeURIComponent(titleText), "_blank", "noopener");
+        status.textContent = "Dump is long. Paste the selected text into the issue body.";
+      }
+    });
     close.addEventListener("click", () => { overlay.style.display = "none"; });
     overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") overlay.style.display = "none"; });
 
-    bar.append(title, select, close);
+    bar.append(title, select, issue, status, close);
     overlay.append(bar, textarea);
     document.body.appendChild(overlay);
     stopGameInput(overlay);
@@ -71,7 +95,7 @@ $bridge = @'
   window.showNitoriDump = function (title, text) {
     const overlay = ensureDumpOverlay();
     const textarea = document.getElementById("nitori-dump-textarea");
-    document.getElementById("nitori-dump-title").textContent = title || "Nitori Dump";
+    document.getElementById("nitori-dump-title").textContent = (title || "Nitori Dump") + "  Build " + BUILD_VERSION;
     textarea.value = text || "";
     overlay.style.display = "flex";
     setTimeout(() => { textarea.focus(); textarea.select(); }, 0);
@@ -92,6 +116,8 @@ $bridge = @'
 </script>
 '@
 $html = Get-Content -LiteralPath $index -Raw
+$bridgeVersion = $buildVersion.Replace("\", "\\").Replace('"', '\"')
+$bridge = $bridge.Replace("__NITORI_BUILD_VERSION__", $bridgeVersion)
 $html = $html -replace '</body>', ($bridge + "`r`n</body>")
 Set-Content -LiteralPath $index -Value $html -NoNewline
 
