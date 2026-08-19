@@ -1188,7 +1188,7 @@ end
 local function showDump(title, text)
   local copied = pcall(function() love.system.setClipboardText(text) end)
   local opened = love.system.openURL and pcall(function()
-    love.system.openURL("nitori-dump:" .. urlEncode(title) .. ":" .. urlEncode(text))
+    love.system.openURL("https://djejsgames.github.io/rreevveerrssee/#nitori_dump=" .. urlEncode(title) .. ":" .. urlEncode(text))
   end)
   if not opened and not copied then print(title .. "\n" .. text) end
 end

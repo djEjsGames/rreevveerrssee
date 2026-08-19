@@ -106,17 +106,34 @@ $bridge = @'
     setTimeout(() => { textarea.focus(); textarea.select(); }, 0);
   };
 
-  window.open = function (url, target, features) {
-    if (typeof url === "string" && url.indexOf("nitori-dump:") === 0) {
-      const payload = url.slice("nitori-dump:".length);
+  function handleDumpUrl(url) {
+    if (typeof url !== "string") return false;
+    let payload = null;
+    if (url.indexOf("nitori-dump:") === 0) {
+      payload = url.slice("nitori-dump:".length);
+    } else {
+      const marker = "#nitori_dump=";
+      const at = url.indexOf(marker);
+      if (at >= 0) payload = url.slice(at + marker.length);
+    }
+    if (payload !== null) {
       const split = payload.indexOf(":");
       const title = split >= 0 ? payload.slice(0, split) : "Nitori Dump";
       const text = split >= 0 ? payload.slice(split + 1) : payload;
       window.showNitoriDump(decodeURIComponent(title), decodeURIComponent(text));
-      return null;
+      if (location.hash.indexOf("nitori_dump=") >= 0) history.replaceState(null, "", location.pathname + location.search);
+      return true;
     }
+    return false;
+  }
+
+  window.open = function (url, target, features) {
+    if (handleDumpUrl(url)) return null;
     return originalOpen(url, target, features);
   };
+
+  window.addEventListener("hashchange", () => handleDumpUrl(location.href));
+  if (location.hash.indexOf("nitori_dump=") >= 0) setTimeout(() => handleDumpUrl(location.href), 0);
 }());
 </script>
 '@
