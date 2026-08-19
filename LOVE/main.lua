@@ -1206,15 +1206,25 @@ local function urlEncode(s)
   end):gsub(" ", "%%20"))
 end
 
+local function htmlEscape(s)
+  return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
+end
+
+local function dumpHtml(title, text)
+  return '<!doctype html><meta charset="utf-8"><title>' .. htmlEscape(title) .. '</title>' ..
+    '<style>body{margin:0;background:#111;color:#eee;font:14px monospace}textarea{box-sizing:border-box;width:100vw;height:100vh;padding:16px;background:#181c1f;color:#f3f3e8;border:0;outline:0;font:13px monospace;white-space:pre}</style>' ..
+    '<textarea id="dump">' .. htmlEscape(text) .. '</textarea><script>const t=document.getElementById("dump");t.focus();t.select();</script>'
+end
+
 local function showDump(title, text)
   local copied = pcall(function() love.system.setClipboardText(text) end)
   local opened = love.system.openURL and pcall(function()
-    love.system.openURL("data:text/plain;charset=utf-8," .. urlEncode(text))
+    love.system.openURL("data:text/html;charset=utf-8," .. urlEncode(dumpHtml(title, text)))
   end)
   dumpOverlay = {
     title = title,
     text = text,
-    message = (copied and "Clipboard attempted. " or "Clipboard blocked. ") .. (opened and "Text tab opened." or "Text tab unavailable."),
+    message = (copied and "Clipboard attempted. " or "Clipboard blocked. ") .. (opened and "Editable text box opened." or "Text box unavailable."),
   }
 end
 
