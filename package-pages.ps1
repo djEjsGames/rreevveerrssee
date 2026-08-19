@@ -39,7 +39,7 @@ $bridge = @'
 
     overlay = document.createElement("div");
     overlay.id = "nitori-dump-overlay";
-    overlay.style.cssText = "position:fixed;inset:24px;z-index:99999;display:none;flex-direction:column;background:#101316;color:#f2f2e8;border:2px solid #ffd84a;border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.55);font:14px system-ui,sans-serif;";
+    overlay.style.cssText = "width:min(940px,calc(100vw - 48px));height:360px;margin:24px auto;display:none;flex-direction:column;background:#101316;color:#f2f2e8;border:2px solid #ffd84a;border-radius:8px;box-shadow:0 12px 36px rgba(0,0,0,.35);font:14px system-ui,sans-serif;";
 
     const bar = document.createElement("div");
     bar.style.cssText = "display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #3b3f42;background:#181c1f;";
@@ -87,7 +87,12 @@ $bridge = @'
 
     bar.append(title, select, issue, status, close);
     overlay.append(bar, textarea);
-    document.body.appendChild(overlay);
+    const canvas = document.getElementById("canvas");
+    if (canvas && canvas.parentNode) {
+      canvas.parentNode.insertBefore(overlay, canvas.nextSibling);
+    } else {
+      document.body.appendChild(overlay);
+    }
     stopGameInput(overlay);
     return overlay;
   }

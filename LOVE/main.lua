@@ -24,7 +24,7 @@ local colors = {
   merger = { 0.52, 0.34, 0.22 },
 }
 
-local board, sources, dests, flows, cargo, selected, placementRotation, paused, debug, status, unlimitedStock, dumpOverlay
+local board, sources, dests, flows, cargo, selected, placementRotation, paused, debug, status, unlimitedStock
 local nextCargoId = 1
 local dirty = true
 local splitState = {}
@@ -1079,27 +1079,6 @@ local function drawDisturbanceAlertUi()
   love.graphics.print(prefix .. pendingDisturbance.label .. " " .. pendingDisturbance.size .. "x" .. pendingDisturbance.size .. " in " .. string.format("%.1f", pendingDisturbance.timer), 620, 18)
 end
 
-local function drawDumpOverlay()
-  if not dumpOverlay then return end
-  local x, y, w, h = 40, 96, 840, 390
-  love.graphics.setColor(0.04, 0.045, 0.05, 0.94)
-  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
-  love.graphics.setColor(1, 0.86, 0.28)
-  love.graphics.rectangle("line", x, y, w, h, 6, 6)
-  love.graphics.setColor(colors.text)
-  love.graphics.print(dumpOverlay.title, x + 16, y + 14)
-  love.graphics.print(dumpOverlay.message .. "  Esc: close", x + 16, y + 36)
-  local shown = 0
-  for line in (dumpOverlay.text .. "\n"):gmatch("(.-)\n") do
-    love.graphics.print(line:sub(1, 118), x + 16, y + 66 + shown * 16)
-    shown = shown + 1
-    if shown >= 19 then
-      love.graphics.print("... full dump is in the opened text tab / clipboard attempt", x + 16, y + 66 + shown * 16)
-      break
-    end
-  end
-end
-
 local function exportDebugState()
   local lines = {
     "Nitori Factory Debug State",
@@ -1211,11 +1190,7 @@ local function showDump(title, text)
   local opened = love.system.openURL and pcall(function()
     love.system.openURL("nitori-dump:" .. urlEncode(title) .. ":" .. urlEncode(text))
   end)
-  dumpOverlay = {
-    title = title,
-    text = text,
-    message = (copied and "Clipboard attempted. " or "Clipboard blocked. ") .. (opened and "Editable web textbox requested." or "Web textbox unavailable."),
-  }
+  if not opened and not copied then print(title .. "\n" .. text) end
 end
 
 function love.load()
@@ -1305,7 +1280,6 @@ function love.draw()
       line = line + 1
     end
   end
-  drawDumpOverlay()
 end
 
 function love.mousepressed(mx, my, button)
@@ -1331,7 +1305,6 @@ end
 
 function love.keypressed(k)
   if k >= "1" and k <= "5" then selected = tonumber(k) end
-  if k == "escape" then dumpOverlay = nil end
   if k == "space" then paused = not paused end
   if k == "`" or k == "grave" then debug = not debug end
   if k == "c" then showDump("Nitori Debug State", exportDebugState()) end
