@@ -1,0 +1,58 @@
+local dirs = { "N", "E", "S", "W" }
+local dx = { N = 0, E = 1, S = 0, W = -1, C = 0 }
+local dy = { N = -1, E = 0, S = 1, W = 0, C = 0 }
+
+return {
+  board = { w = 12, h = 8, cell = 48, ox = 32, oy = 112 },
+  editorBoardSizes = {
+    { w = 8, h = 5, label = "Small 8x5" },
+    { w = 12, h = 8, label = "Medium 12x8" },
+    { w = 16, h = 10, label = "Large 16x10" },
+  },
+  dirs = dirs,
+  dx = dx,
+  dy = dy,
+  opposite = { N = "S", E = "W", S = "N", W = "E", C = "C" },
+  names = { "straight", "corner", "splitter", "merger", "bridge", "schema", "backdoor" },
+  editorNames = { "source", "dest", "straight", "corner", "splitter", "merger", "bridge", "schema", "backdoor", "rock", "water" },
+  cargoTypes = { "box", "gear", "part" },
+  colors = {
+    bg = { 0.08, 0.09, 0.1 },
+    grid = { 0.22, 0.24, 0.25 },
+    empty = { 0.13, 0.14, 0.15 },
+    tile = { 0.23, 0.27, 0.29 },
+    flow = { 0.33, 0.75, 1 },
+    block = { 1, 0.25, 0.22 },
+    cargo = { 1, 0.78, 0.25 },
+    text = { 0.9, 0.92, 0.88 },
+    source = { 0.22, 0.65, 0.33 },
+    dest = { 0.65, 0.42, 0.85 },
+    hover = { 1, 0.86, 0.28 },
+    panel = { 0.16, 0.18, 0.19 },
+    selected = { 0.32, 0.58, 0.78 },
+    splitter = { 0.2, 0.45, 0.52 },
+    merger = { 0.52, 0.34, 0.22 },
+    schema = { 0.42, 0.28, 0.7 },
+    rock = { 0.28, 0.27, 0.25 },
+    water = { 0.12, 0.31, 0.42 },
+  },
+  topTabs = {
+    { id = "build", label = "Build" },
+    { id = "editor", label = "Editor" },
+    { id = "debug", label = "Debug" },
+    { id = "system", label = "System" },
+  },
+  cargoSpacing = 0.55,
+  rotateTweenDuration = 0.1,
+  cameraSpeed = 360,
+  disturbanceDelay = 3,
+  disturbanceTweenDuration = 1,
+  disturbanceEffects = {
+    { id = "rotate_cw", label = "Rotate +90" },
+    { id = "rotate_ccw", label = "Rotate -90" },
+    { id = "flip_h", label = "Flip Horizontal" },
+    { id = "flip_v", label = "Flip Vertical" },
+    { id = "flip_diag_main", label = "Flip Diagonal \\" },
+    { id = "flip_diag_anti", label = "Flip Diagonal /" },
+  },
+}

@@ -1,55 +1,53 @@
-local W, H, CELL = 12, 8, 48
-local PORT_RADIUS = CELL * 0.5
-local OX, OY = 24, 72
-local dirs = { "N", "E", "S", "W" }
-local dx = { N = 0, E = 1, S = 0, W = -1 }
-local dy = { N = -1, E = 0, S = 1, W = 0 }
-local opposite = { N = "S", E = "W", S = "N", W = "E" }
-local names = { "straight", "corner", "splitter", "merger", "bridge" }
-local colors = {
-  bg = { 0.08, 0.09, 0.1 },
-  grid = { 0.22, 0.24, 0.25 },
-  empty = { 0.13, 0.14, 0.15 },
-  tile = { 0.23, 0.27, 0.29 },
-  flow = { 0.33, 0.75, 1 },
-  block = { 1, 0.25, 0.22 },
-  cargo = { 1, 0.78, 0.25 },
-  text = { 0.9, 0.92, 0.88 },
-  source = { 0.22, 0.65, 0.33 },
-  dest = { 0.65, 0.42, 0.85 },
-  hover = { 1, 0.86, 0.28 },
-  panel = { 0.16, 0.18, 0.19 },
-  selected = { 0.32, 0.58, 0.78 },
-  splitter = { 0.2, 0.45, 0.52 },
-  merger = { 0.52, 0.34, 0.22 },
-}
+local config = require("src.config")
+local common = require("src.common")
+local editor = require("src.editor")
+local scenarios = require("src.scenarios")
+local tileRules = require("src.tile_rules")
+local flowRules = require("src.flow")
 
-local board, sources, dests, flows, cargo, selected, placementRotation, paused, debug, status, unlimitedStock
+local W, H, CELL = config.board.w, config.board.h, config.board.cell
+local PORT_RADIUS = CELL * 0.5
+local OX, OY = config.board.ox, config.board.oy
+local EDITOR_BOARD_SIZES = config.editorBoardSizes
+local dirs, dx, dy, opposite = config.dirs, config.dx, config.dy, config.opposite
+local names, editorNames = config.names, config.editorNames
+local colors = config.colors
+
+local board, sources, dests, flows, cargo, selected, editorSelected, placementRotation, paused, debug, status, unlimitedStock
 local nextCargoId = 1
+local nextSchemaId, schemaStock, pendingSchema = 1, 2, nil
+local editorMode, editorSizing, editorMessage = false, false, ""
+local topTab = "build"
 local dirty = true
 local splitState = {}
 local scenario = 1
-local cargoSpacing = 0.55
-local rotateTweenDuration = 0.1
+local scenarioTitle = ""
+local cargoSpacing = config.cargoSpacing
+local rotateTweenDuration = config.rotateTweenDuration
 local cameraX, cameraY, zoom = 0, 0, 1
-local cameraSpeed = 360
+local cameraSpeed = config.cameraSpeed
 local simTime = 0
 local replayEvents = {}
 local pendingDisturbance = nil
-local disturbanceDelay = 3
-local disturbanceTweenDuration = 1
-local disturbanceEffects = {
-  { id = "rotate_cw", label = "Rotate +90" },
-  { id = "rotate_ccw", label = "Rotate -90" },
-  { id = "flip_h", label = "Flip Horizontal" },
-  { id = "flip_v", label = "Flip Vertical" },
-  { id = "flip_diag_main", label = "Flip Diagonal \\" },
-  { id = "flip_diag_anti", label = "Flip Diagonal /" },
-}
-
-local function key(x, y) return x .. "," .. y end
-local function laneKey(x, y, entry, exit) return x .. "," .. y .. "," .. entry .. "," .. exit end
-local function inBounds(x, y) return x >= 1 and y >= 1 and x <= W and y <= H end
+local disturbanceTweenDuration = config.disturbanceTweenDuration
+local deniedShakes = {}
+dragStart = nil
+consumableOrder = { "none", "cirno_wing", "momoyo_pickaxe" }
+consumableCounts = { cirno_wing = 3, momoyo_pickaxe = 3 }
+equippedConsumable = 1
+consumableTween = nil
+ruleInversions = { reverseFlow = false, swapSplitMerge = false }
+portraits = {}
+characterCue = nil
+bgm = nil
+local disturbanceEffects = config.disturbanceEffects
+local key, laneKey = common.key, common.laneKey
+local function inBounds(x, y) return common.inBounds(x, y, W, H) end
+local cellHasCargo, cellAt, denyCellAction
+local rotationLabel
+local fitBoardToView, resetScenario
+local function hasDir(list, dir) return common.hasDir(list, dir, dirs) end
+local function dirIndex(d) return common.dirIndex(dirs, d) end
 local function center(x, y) return OX + (x - 0.5) * CELL, OY + (y - 0.5) * CELL end
 local function portPoint(x, y, d)
   local cx, cy = center(x, y)
@@ -65,159 +63,236 @@ local function newBoard()
   return b
 end
 
-local function setTile(x, y, typeName, rot)
-  if board[y][x].kind == "source" or board[y][x].kind == "dest" then return false end
+local function canModifyCell(cell, layer)
+  if layer == "disturbance" then return cell.kind ~= "source" and cell.kind ~= "dest" end
+  if layer == "editor" then return true end
+  return not cell.immutable
+end
+
+local function removeFrom(list, x, y)
+  for i = #list, 1, -1 do
+    if list[i].x == x and list[i].y == y then table.remove(list, i) end
+  end
+end
+
+local function setTile(x, y, typeName, rot, layer)
+  if not canModifyCell(board[y][x], layer or "player") then return false end
+  if board[y][x].type == "schema_in" or board[y][x].type == "schema_out" then return false end
   board[y][x] = { kind = "tile", type = typeName, rotation = rot or 0 }
   dirty = true
   return true
 end
 
+local function setSchemaTile(x, y, part, pair, rot, layer)
+  if not canModifyCell(board[y][x], layer or "player") then return false end
+  board[y][x] = { kind = "tile", type = part == "in" and "schema_in" or "schema_out", pair = pair, rotation = rot or 0 }
+  dirty = true
+  return true
+end
+
+local function findSchemaPart(pair, part)
+  local typeName = part == "in" and "schema_in" or "schema_out"
+  for y = 1, H do
+    for x = 1, W do
+      local cell = board[y][x]
+      if cell.kind == "tile" and cell.type == typeName and cell.pair == pair then return x, y, cell end
+    end
+  end
+end
+
+local function schemaPairComplete(pair)
+  return findSchemaPart(pair, "in") and findSchemaPart(pair, "out")
+end
+
+local function removeTileAt(x, y)
+  local cell = board[y][x]
+  if cell.kind ~= "tile" then return false end
+  if cell.type == "schema_in" or cell.type == "schema_out" then
+    local complete = schemaPairComplete(cell.pair)
+    for yy = 1, H do
+      for xx = 1, W do
+        local other = board[yy][xx]
+        if other.kind == "tile" and other.pair == cell.pair then board[yy][xx] = { kind = "empty" } end
+      end
+    end
+    if pendingSchema and pendingSchema.pair == cell.pair then pendingSchema = nil end
+    if complete then schemaStock = schemaStock + 1 end
+  else
+    board[y][x] = { kind = "empty" }
+  end
+  dirty = true
+  return true
+end
+
+local function clearCellAt(x, y)
+  local cell = board[y][x]
+  if cell.kind == "tile" then removeTileAt(x, y); return end
+  if cell.kind == "source" then removeFrom(sources, x, y) end
+  if cell.kind == "dest" then removeFrom(dests, x, y) end
+  board[y][x] = { kind = "empty" }
+  dirty = true
+end
+
+function swapTiles(ax, ay, bx, by, layer)
+  if ax == bx and ay == by then return false end
+  if not inBounds(ax, ay) or not inBounds(bx, by) then return false end
+  local a, b = board[ay][ax], board[by][bx]
+  if not ((a.kind == "tile" or a.kind == "empty") and (b.kind == "tile" or b.kind == "empty")) then return false end
+  if a.kind == "empty" and b.kind == "empty" then return false end
+  if cellHasCargo(ax, ay) or cellHasCargo(bx, by) then return false end
+  board[ay][ax], board[by][bx] = b, a
+  dirty = true
+  return true
+end
+
+local function setObstacle(x, y, typeName, immutable)
+  board[y][x] = { kind = "obstacle", type = typeName, immutable = immutable ~= false }
+end
+
 local function setSource(s)
-  board[s.y][s.x] = { kind = "source", id = s.id }
+  s.strength = 1
+  s.rotation = dirIndex(s.output)
+  board[s.y][s.x] = { kind = "source", id = s.id, output = s.output, rotation = s.rotation, immutable = true }
   sources[#sources + 1] = s
 end
 
 local function setDest(d)
-  board[d.y][d.x] = { kind = "dest", id = d.id }
+  d.inputs = d.inputs or dirs
+  d.rotation = d.rotation or dirIndex(d.inputs[1])
+  board[d.y][d.x] = { kind = "dest", id = d.id, inputs = d.inputs, rotation = d.rotation, immutable = true }
   dests[#dests + 1] = d
 end
 
-local function loadScenario(n)
-  scenario = n
+local function nextNodeId(prefix, list)
+  local maxId = 0
+  for _, item in ipairs(list) do
+    local n = tostring(item.id):match("^" .. prefix .. "(%d+)$")
+    if n then maxId = math.max(maxId, tonumber(n)) end
+  end
+  return prefix .. (maxId + 1)
+end
+
+local function sourceAt(x, y)
+  for _, s in ipairs(sources) do if s.x == x and s.y == y then return s end end
+end
+
+local function destAt(x, y)
+  for _, d in ipairs(dests) do if d.x == x and d.y == y then return d end end
+end
+
+local function firstReqType(d)
+  for t in pairs(d.req or {}) do return t end
+  return "box"
+end
+
+local function cycleCargoType(t)
+  for i, name in ipairs(config.cargoTypes) do
+    if name == t then return config.cargoTypes[i % #config.cargoTypes + 1] end
+  end
+  return config.cargoTypes[1]
+end
+
+local function editorApi()
+  return {
+    board = function() return board end,
+    sources = function() return sources end,
+    dests = function() return dests end,
+    editorMode = function() return editorMode end,
+    editorBoardSizes = function() return EDITOR_BOARD_SIZES end,
+    placementRotation = function() return placementRotation end,
+    pendingSchema = function() return pendingSchema end,
+    key = key,
+    inBounds = inBounds,
+    cell = function(x, y) return board[y][x] end,
+    hoverCell = function() return cellAt(love.mouse.getPosition()) end,
+    sourceAt = sourceAt,
+    destAt = destAt,
+    firstReqType = firstReqType,
+    cycleCargoType = cycleCargoType,
+    cellHasCargo = cellHasCargo,
+    denyCellAction = denyCellAction,
+    clearCellAt = clearCellAt,
+    setSource = setSource,
+    setDest = setDest,
+    setObstacle = setObstacle,
+    setSchemaTile = setSchemaTile,
+    setTile = setTile,
+    nextNodeId = nextNodeId,
+    rotationLabel = rotationLabel,
+    resetScenario = resetScenario,
+    setMessage = function(message) editorMessage = message end,
+    markDirty = function() dirty = true end,
+    setPendingSchema = function(value) pendingSchema = value end,
+    takeNextSchemaId = function()
+      local pair = nextSchemaId
+      nextSchemaId = nextSchemaId + 1
+      return pair
+    end,
+    setEditorState = function(mode, sizing, _, pending, pause)
+      editorMode, editorSizing, pendingSchema, paused = mode, sizing, pending, pause
+    end,
+  }
+end
+
+local function editHoveredResource(action)
+  return editor.editHoveredResource(action, editorApi())
+end
+
+local function placeEditorItem(x, y, name)
+  return editor.placeItem(x, y, name, editorApi())
+end
+
+resetScenario = function(n, w, h, title)
+  scenario, W, H, scenarioTitle = n, w, h, title
   board, sources, dests, cargo, flows, splitState = newBoard(), {}, {}, {}, {}, {}
+  nextSchemaId, schemaStock, pendingSchema = 1, 2, nil
   simTime = 0
   replayEvents = { { t = 0, action = "scenario", scenario = n } }
   nextCargoId, status, dirty = 1, "running", true
-  if n == 1 then
-    setSource({ id = "A1", x = 1, y = 4, output = "E", strength = 1, cargoType = "box", remaining = 8, timer = 0, interval = 1 })
-    setDest({ id = "B1", x = 12, y = 4, req = { box = 5 }, got = {}, wrong = 0 })
-    for x = 2, 11 do setTile(x, 4, "straight", 1) end
-  elseif n == 2 then
-    setSource({ id = "A1", x = 1, y = 4, output = "E", strength = 1, cargoType = "box", remaining = -1, timer = 0, interval = 0.8 })
-    setDest({ id = "B1", x = 8, y = 2, req = { box = 2 }, got = {}, wrong = 0 })
-    setDest({ id = "B2", x = 8, y = 4, req = { box = 2 }, got = {}, wrong = 0 })
-    setDest({ id = "B3", x = 8, y = 6, req = { box = 2 }, got = {}, wrong = 0 })
-    setTile(2, 4, "splitter", 3)
-    for x = 3, 7 do setTile(x, 4, "straight", 1) end
-    setTile(2, 3, "straight", 0); setTile(2, 2, "corner", 1)
-    for x = 3, 7 do setTile(x, 2, "straight", 1) end
-    setTile(2, 5, "straight", 0); setTile(2, 6, "corner", 0)
-    for x = 3, 7 do setTile(x, 6, "straight", 1) end
-  else
-    setSource({ id = "A1", x = 1, y = 4, output = "E", strength = 1, cargoType = "box", remaining = 10, timer = 0, interval = 0.7 })
-    setSource({ id = "A2", x = 12, y = 4, output = "W", strength = 3, cargoType = "box", remaining = 10, timer = 0, interval = 0.7 })
-    for x = 2, 11 do setTile(x, 4, "straight", 1) end
-    setDest({ id = "B1", x = 6, y = 1, req = { box = 4 }, got = {}, wrong = 0 })
-  end
+  cameraX, cameraY, zoom = 0, 0, 1
+  if fitBoardToView then fitBoardToView() end
 end
 
-local function exitsFor(tile, entry)
-  local r = tile.rotation % 4
-  if tile.type == "straight" then
-    local a, b = r % 2 == 0 and "N" or "E", r % 2 == 0 and "S" or "W"
-    if entry == a then return { b } end
-    if entry == b then return { a } end
-  elseif tile.type == "corner" then
-    local a, b = dirs[r + 1], dirs[(r + 1) % 4 + 1]
-    if entry == a then return { b } end
-    if entry == b then return { a } end
-  elseif tile.type == "splitter" then
-    local input = dirs[r + 1]
-    if entry == input then
-      local outs = {}
-      for _, d in ipairs(dirs) do if d ~= input then outs[#outs + 1] = d end end
-      return outs
-    end
-  elseif tile.type == "merger" then
-    local output = dirs[r + 1]
-    if entry ~= output then return { output } end
-  elseif tile.type == "bridge" then
-    if entry == "N" then return { "S" } end
-    if entry == "S" then return { "N" } end
-    if entry == "W" then return { "E" } end
-    if entry == "E" then return { "W" } end
-  end
-  return {}
+local function loadScenario(n)
+  scenarios.load(n, {
+    resetScenario = resetScenario,
+    setSource = setSource,
+    setDest = setDest,
+    setTile = setTile,
+    setObstacle = setObstacle,
+  })
 end
 
-local function exitConnects(x, y, exit)
-  local nx, ny = x + dx[exit], y + dy[exit]
-  if not inBounds(nx, ny) then return false end
-  local nextCell = board[ny][nx]
-  if nextCell.kind == "dest" then return true end
-  if nextCell.kind ~= "tile" then return false end
-  return #exitsFor(nextCell, opposite[exit]) > 0
+local function startEditorSizing()
+  editor.startSizing(editorApi())
 end
 
-local function tileSegments(tile)
-  local r = tile.rotation % 4
-  if tile.type == "straight" then
-    return r % 2 == 0 and { { "N", "S" } } or { { "E", "W" } }
-  elseif tile.type == "corner" then
-    return { { dirs[r + 1], dirs[(r + 1) % 4 + 1] } }
-  elseif tile.type == "splitter" then
-    local input = dirs[r + 1]
-    local segments = {}
-    for _, d in ipairs(dirs) do
-      if d ~= input then segments[#segments + 1] = { input, d } end
-    end
-    return segments
-  elseif tile.type == "merger" then
-    local output = dirs[r + 1]
-    local segments = {}
-    for _, d in ipairs(dirs) do
-      if d ~= output then segments[#segments + 1] = { d, output } end
-    end
-    return segments
-  elseif tile.type == "bridge" then
-    return { { "N", "S" }, { "W", "E" } }
-  end
-  return {}
+local function createEditorStage(sizeIndex)
+  return editor.createStage(sizeIndex, editorApi())
 end
 
 local function tileColor(tile)
-  if tile.type == "splitter" then return colors.splitter end
-  if tile.type == "merger" then return colors.merger end
-  return colors.tile
+  return tileRules.color(tile, colors)
 end
 
-local function tilePorts(tile)
-  local r = tile.rotation % 4
-  if tile.type == "splitter" then
-    local input, outputs = dirs[r + 1], {}
-    for _, d in ipairs(dirs) do if d ~= input then outputs[#outputs + 1] = d end end
-    return { input }, outputs
-  elseif tile.type == "merger" then
-    local output, inputs = dirs[r + 1], {}
-    for _, d in ipairs(dirs) do if d ~= output then inputs[#inputs + 1] = d end end
-    return inputs, { output }
-  end
-  return {}, {}
+local function tileLabel(tile)
+  return tileRules.label(tile)
 end
 
-local function baseTileSegments(typeName)
-  if typeName == "straight" then return { { "N", "S" } } end
-  if typeName == "corner" then return { { "N", "E" } } end
-  if typeName == "splitter" then return { { "N", "E" }, { "N", "S" }, { "N", "W" } } end
-  if typeName == "merger" then return { { "E", "N" }, { "S", "N" }, { "W", "N" } } end
-  if typeName == "bridge" then return { { "N", "S" }, { "W", "E" } } end
-  return {}
+local function boardToken(cell)
+  if cell.kind == "tile" then return tileLabel(cell) .. (cell.pair and (cell.pair .. ":") or "") .. cell.rotation end
+  if cell.kind == "obstacle" then return cell.type:sub(1, 1):upper() end
+  if cell.kind == "source" then return "A:" .. cell.output end
+  if cell.kind == "dest" then return "B:" .. table.concat(cell.inputs or dirs, "") end
+  return ({ empty = ".", source = "A", dest = "B" })[cell.kind]
 end
 
-local function baseTilePorts(typeName)
-  if typeName == "splitter" then return { "N" }, { "E", "S", "W" } end
-  if typeName == "merger" then return { "E", "S", "W" }, { "N" } end
-  return {}, {}
-end
+function tileSegments(tile) return tileRules.segments(tile, ruleInversions) end
+function tilePorts(tile) return tileRules.ports(tile, ruleInversions) end
+function baseTileSegments(typeName) return tileRules.baseSegments(typeName, ruleInversions) end
+function baseTilePorts(typeName) return tileRules.basePorts(typeName, ruleInversions) end
 
-local function easeOutQuint(t)
-  return 1 - (1 - t) ^ 5
-end
-
-local function rotateLocal(lx, ly, turns)
-  local a = turns * math.pi / 2
-  return lx * math.cos(a) - ly * math.sin(a), lx * math.sin(a) + ly * math.cos(a)
-end
+local easeOutQuint, rotateLocal = common.easeOutQuint, common.rotateLocal
 
 local function drawPoint(cx, cy, d, radius, rot)
   local x, y = dx[d] * radius, dy[d] * radius
@@ -240,40 +315,9 @@ local function rotateTile(tile, turns, duration)
   tile.tweenFrom, tile.tweenTo, tile.tweenTime, tile.tweenDuration = from, from + turns, 0, duration or rotateTweenDuration
 end
 
-local function dirIndex(d)
-  for i, name in ipairs(dirs) do if name == d then return i - 1 end end
-  return 0
-end
-
-local function transformDir(d, effect)
-  if effect == "rotate_cw" then return ({ N = "E", E = "S", S = "W", W = "N" })[d] end
-  if effect == "rotate_ccw" then return ({ N = "W", W = "S", S = "E", E = "N" })[d] end
-  if effect == "flip_h" then return ({ N = "N", E = "W", S = "S", W = "E" })[d] end
-  if effect == "flip_v" then return ({ N = "S", E = "E", S = "N", W = "W" })[d] end
-  if effect == "flip_diag_main" then return ({ N = "W", E = "S", S = "E", W = "N" })[d] end
-  if effect == "flip_diag_anti" then return ({ N = "E", E = "N", S = "W", W = "S" })[d] end
-  return d
-end
-
-local function transformLocal(lx, ly, effect)
-  if effect == "rotate_cw" then return rotateLocal(lx, ly, 1) end
-  if effect == "rotate_ccw" then return rotateLocal(lx, ly, -1) end
-  if effect == "flip_h" then return -lx, ly end
-  if effect == "flip_v" then return lx, -ly end
-  if effect == "flip_diag_main" then return ly, lx end
-  if effect == "flip_diag_anti" then return -ly, -lx end
-  return lx, ly
-end
-
-local function transformRegionLocal(gx, gy, size, effect)
-  if effect == "rotate_cw" then return size - gy, gx end
-  if effect == "rotate_ccw" then return gy, size - gx end
-  if effect == "flip_h" then return size - gx, gy end
-  if effect == "flip_v" then return gx, size - gy end
-  if effect == "flip_diag_main" then return gy, gx end
-  if effect == "flip_diag_anti" then return size - gy, size - gx end
-  return gx, gy
-end
+local transformDir, transformLocal = common.transformDir, common.transformLocal
+local effectMatrix, matrixPoint = common.effectMatrix, common.matrixPoint
+local composeMatrix, transformRegionLocal = common.composeMatrix, common.transformRegionLocal
 
 local function tweenRegionLocal(gx, gy, size, effect, t)
   if effect == "rotate_cw" or effect == "rotate_ccw" then
@@ -286,15 +330,7 @@ local function tweenRegionLocal(gx, gy, size, effect, t)
   return gx + (tx - gx) * t, gy + (ty - gy) * t
 end
 
-local function regionPointToCell(x, y, size, gx, gy)
-  local ix = math.max(0, math.min(size - 1, math.floor(gx)))
-  local iy = math.max(0, math.min(size - 1, math.floor(gy)))
-  return x + ix, y + iy, gx - ix - 0.5, gy - iy - 0.5
-end
-
-local function samePortSet(a, b, c, d)
-  return (a == c and b == d) or (a == d and b == c)
-end
+local regionPointToCell, samePortSet = common.regionPointToCell, common.samePortSet
 
 local function tileRotationAfterEffect(tile, effect)
   local r = tile.rotation % 4
@@ -331,9 +367,14 @@ local function updateTileTweens(dt)
         tile.effectTween.time = tile.effectTween.time + dt
         if tile.effectTween.time >= tile.effectTween.duration then tile.effectTween = nil end
       end
-      if tile.kind == "tile" and tile.regionTween then
+      if (tile.kind == "tile" or tile.kind == "obstacle") and tile.regionTween then
         tile.regionTween.time = tile.regionTween.time + dt
-        if tile.regionTween.time >= tile.regionTween.duration then tile.regionTween = nil end
+        if tile.regionTween.time >= tile.regionTween.duration then
+          if tile.kind == "obstacle" and tile.regionTween.toTransform then
+            tile.transform = tile.regionTween.toTransform
+          end
+          tile.regionTween = nil
+        end
       end
     end
   end
@@ -356,63 +397,43 @@ local function updateCargoTweens(dt)
   end
 end
 
-local function claimLane(lane)
-  local k = laneKey(lane.x, lane.y, lane.entry, lane.exit)
-  local reverse = laneKey(lane.x, lane.y, lane.exit, lane.entry)
-  if flows.lanes[reverse] then
-    local other = flows.lanes[reverse]
-    if other.strength == lane.strength then
-      other.blocked, lane.blocked = true, true
-      flows.blocks[key(lane.x, lane.y)] = true
-      flows.lanes[k] = lane
-      return false
-    end
-    if other.strength > lane.strength then
-      lane.blocked = true
-      flows.blocks[key(lane.x, lane.y)] = true
-      flows.lanes[k] = lane
-      return false
-    end
-    other.blocked = true
-    flows.blocks[key(lane.x, lane.y)] = true
+local function updateDeniedShakes(dt)
+  for k, t in pairs(deniedShakes) do
+    t = t - dt
+    if t <= 0 then deniedShakes[k] = nil else deniedShakes[k] = t end
   end
-  local old = flows.lanes[k]
-  if not old or lane.strength >= old.strength then flows.lanes[k] = lane end
-  return true
+end
+
+local function deniedShakeOffset(x, y)
+  local shake = deniedShakes[key(x, y)]
+  if not shake then return 0, 0 end
+  local f = shake / 0.18
+  return math.sin(shake * 95) * 8 * f, 0
+end
+
+function flowApi()
+  return {
+    board = board,
+    sources = sources,
+    dests = dests,
+    flows = flows,
+    splitState = splitState,
+    rules = ruleInversions,
+    dirs = dirs,
+    dx = dx,
+    dy = dy,
+    opposite = opposite,
+    key = key,
+    laneKey = laneKey,
+    inBounds = inBounds,
+    hasDir = hasDir,
+    findSchemaPart = findSchemaPart,
+    schemaPairComplete = schemaPairComplete,
+  }
 end
 
 local function recalcFlow()
-  flows = { lanes = {}, from = {}, sourceLanes = {}, blocks = {} }
-  local queue = {}
-  for _, s in ipairs(sources) do
-    queue[#queue + 1] = { x = s.x + dx[s.output], y = s.y + dy[s.output], entry = opposite[s.output], source = s.id, strength = s.strength, dist = 0 }
-  end
-  local guard = 0
-  while #queue > 0 and guard < 2000 do
-    guard = guard + 1
-    local f = table.remove(queue, 1)
-    if inBounds(f.x, f.y) then
-      local cell = board[f.y][f.x]
-      if cell.kind == "tile" then
-        for _, exit in ipairs(exitsFor(cell, f.entry)) do
-          if (cell.type ~= "splitter" and cell.type ~= "merger") or exitConnects(f.x, f.y, exit) then
-          local lane = { x = f.x, y = f.y, entry = f.entry, exit = exit, type = cell.type, source = f.source, strength = f.strength, dist = f.dist + 1 }
-          claimLane(lane)
-          local lk = laneKey(f.x, f.y, f.entry, exit)
-          flows.from[f.x .. "," .. f.y .. "," .. f.entry] = flows.from[f.x .. "," .. f.y .. "," .. f.entry] or {}
-          table.insert(flows.from[f.x .. "," .. f.y .. "," .. f.entry], lk)
-          if f.dist == 0 then
-            flows.sourceLanes[f.source] = flows.sourceLanes[f.source] or {}
-            table.insert(flows.sourceLanes[f.source], lk)
-          end
-          if not lane.blocked then
-            queue[#queue + 1] = { x = f.x + dx[exit], y = f.y + dy[exit], entry = opposite[exit], source = f.source, strength = f.strength, dist = f.dist + 1 }
-          end
-          end
-        end
-      end
-    end
-  end
+  flows = flowRules.recalc(flowApi())
   dirty = false
 end
 
@@ -427,7 +448,7 @@ local function laneHasSpace(lk, progress, ignoreId, fromProgress)
 end
 
 local function laneSnapshot(lane)
-  return lane and { x = lane.x, y = lane.y, entry = lane.entry, exit = lane.exit, type = lane.type }
+  return lane and { x = lane.x, y = lane.y, entry = lane.entry, exit = lane.exit, type = lane.type, pair = lane.pair }
 end
 
 local function laneLocalPoint(lane, progress)
@@ -469,11 +490,15 @@ local function cargoInCell(c, x, y)
   return c.cellX == x and c.cellY == y
 end
 
-local function cellHasCargo(x, y)
+function cellHasCargo(x, y)
   for _, c in ipairs(cargo) do
     if cargoInCell(c, x, y) then return true end
   end
   return false
+end
+
+denyCellAction = function(x, y)
+  deniedShakes[key(x, y)] = 0.18
 end
 
 local function progressOnSegment(lx, ly, ax, ay, bx, by)
@@ -575,21 +600,17 @@ local function rotateCargoInCell(x, y)
 end
 
 local function laneAfter(lane)
-  local nx, ny = lane.x + dx[lane.exit], lane.y + dy[lane.exit]
-  if not inBounds(nx, ny) then return nil, "void" end
-  local cell = board[ny][nx]
-  if cell.kind == "dest" then return nil, "dest", cell.id end
-  if cell.kind ~= "tile" then return nil, "blocked" end
-  local entry = opposite[lane.exit]
-  local options = flows.from[nx .. "," .. ny .. "," .. entry] or {}
-  if #options == 0 then return nil, "blocked" end
-  if cell.kind == "tile" and cell.type == "splitter" then
-    local sk = key(nx, ny)
-    splitState[sk] = splitState[sk] or 1
-    local pick = options[((splitState[sk] - 1) % #options) + 1]
-    return pick, "lane", nil, sk
+  return flowRules.laneAfter(flowApi(), lane)
+end
+
+local function returnToStock(c)
+  for _, s in ipairs(sources) do
+    if s.id == c.source then
+      if not unlimitedStock and s.remaining ~= -1 then s.remaining = s.remaining + 1 end
+      break
+    end
   end
-  return options[1], "lane"
+  c.state = "removed"
 end
 
 local function deliver(destId, c)
@@ -606,7 +627,37 @@ local function deliver(destId, c)
   end
 end
 
+local function deliverToSource(sourceId, c)
+  for _, s in ipairs(sources) do
+    if s.id == sourceId then
+      s.received = s.received or {}
+      s.received[c.type] = (s.received[c.type] or 0) + 1
+      c.state = "removed"
+      return
+    end
+  end
+end
+
+local function spawnFromDestinations(dt)
+  for _, d in ipairs(dests) do
+    d.timer = (d.timer or 0) + dt
+    local t = firstReqType(d)
+    local limit = d.req[t] or 0
+    d.reverseSent = d.reverseSent or 0
+    if d.timer >= (d.interval or 1) and d.reverseSent < limit then
+      local sourceLanes = flows.sourceLanes[d.id]
+      local lk = sourceLanes and sourceLanes[1]
+      if lk and laneHasSpace(lk, 0) then
+        local lane = flows.lanes[lk]
+        cargo[#cargo + 1] = { id = nextCargoId, type = t, source = d.id, lane = lk, visualLane = laneSnapshot(lane), cellX = lane.x, cellY = lane.y, progress = 0, speed = 1.5, state = "moving" }
+        nextCargoId, d.reverseSent, d.timer = nextCargoId + 1, d.reverseSent + 1, 0
+      end
+    end
+  end
+end
+
 local function spawn(dt)
+  if ruleInversions.reverseFlow then return spawnFromDestinations(dt) end
   for _, s in ipairs(sources) do
     s.timer = s.timer + dt
     if s.timer >= s.interval and (unlimitedStock or s.remaining == -1 or s.remaining > 0) then
@@ -660,6 +711,10 @@ local function moveCargo(dt)
           local nextLane, why, destId, splitterKey = laneAfter(lane)
           if why == "dest" then
             deliver(destId, c)
+          elseif why == "source" then
+            deliverToSource(destId, c)
+          elseif why == "stock" then
+            returnToStock(c)
           elseif nextLane and laneHasSpace(nextLane, 0) then
             c.lane, c.progress, c.state = nextLane, 0, "moving"
             c.visualLane = laneSnapshot(flows.lanes[nextLane])
@@ -678,6 +733,17 @@ local function moveCargo(dt)
 end
 
 local function checkStatus()
+  if ruleInversions.reverseFlow then
+    local need, got = 0, 0
+    for _, d in ipairs(dests) do
+      for _, n in pairs(d.req) do need = need + n end
+    end
+    for _, s in ipairs(sources) do
+      for _, n in pairs(s.received or {}) do got = got + n end
+    end
+    status = need > 0 and got >= need and "success" or "running"
+    return
+  end
   local ok = true
   for _, d in ipairs(dests) do
     for t, need in pairs(d.req) do
@@ -697,27 +763,121 @@ local function checkStatus()
   status = "running"
 end
 
-local function cellAt(mx, my)
+cellAt = function(mx, my)
   mx, my = (mx - cameraX) / zoom, (my - cameraY) / zoom
   return math.floor((mx - OX) / CELL) + 1, math.floor((my - OY) / CELL) + 1
 end
 
-local function clamp(v, lo, hi)
-  return math.max(lo, math.min(hi, v))
+local clamp = common.clamp
+
+function rotationLabel(r)
+  return common.rotationLabel(dirs, r)
 end
 
-local function rotationLabel(r)
-  return dirs[(r % 4) + 1]
+local function currentPalette()
+  return editorMode and editorNames or names
+end
+
+local function currentSelection()
+  return editorMode and editorSelected or selected
+end
+
+local function screenSize()
+  local w = love.graphics.getWidth and love.graphics.getWidth() or 1280
+  local h = love.graphics.getHeight and love.graphics.getHeight() or 820
+  return w, h
+end
+
+local function placementPanelRect()
+  local screenW, screenH = screenSize()
+  local palette = currentPalette()
+  local w = math.max(420, #palette * 88 + 18)
+  return math.max(20, (screenW - w) * 0.5), screenH - 82, w, 74
+end
+
+fitBoardToView = function()
+  local screenW, screenH = screenSize()
+  local left, top, rightPanelW, bottomPanelH = 24, 112, 316, 96
+  local viewW = math.max(CELL, screenW - left - rightPanelW)
+  local viewH = math.max(CELL, screenH - top - bottomPanelH)
+  local boardW, boardH = W * CELL, H * CELL
+  zoom = math.min(2.5, math.max(1, math.min(viewW / boardW, viewH / boardH)))
+  cameraX = left + (viewW - boardW * zoom) * 0.5 - OX * zoom
+  cameraY = top + (viewH - boardH * zoom) * 0.5 - OY * zoom
 end
 
 local function panelHit(mx, my)
-  local y = OY + H * CELL + 14
-  if my < y or my > y + 58 then return nil end
-  for i = 1, #names do
-    local x = OX + (i - 1) * 112
-    if mx >= x and mx <= x + 104 then return i end
+  local px, py = placementPanelRect()
+  if my < py + 8 or my > py + 66 then return nil end
+  local palette = currentPalette()
+  for i = 1, #palette do
+    local x = px + 12 + (i - 1) * 88
+    if mx >= x and mx <= x + 82 then return i end
   end
   return nil
+end
+
+local function topTabHit(mx, my)
+  local x, y = 24, 18
+  for _, tab in ipairs(config.topTabs) do
+    if mx >= x and mx <= x + 86 and my >= y and my <= y + 24 then return tab.id end
+    x = x + 94
+  end
+  return nil
+end
+
+local function drawTopPanel()
+  local screenW = screenSize()
+  love.graphics.setColor(colors.panel)
+  love.graphics.rectangle("fill", 14, 10, math.max(360, screenW - 28), 88, 5, 5)
+
+  local x = 24
+  for _, tab in ipairs(config.topTabs) do
+    love.graphics.setColor(tab.id == topTab and colors.selected or colors.tile)
+    love.graphics.rectangle("fill", x, 18, 86, 24, 4, 4)
+    love.graphics.setColor(tab.id == topTab and colors.hover or colors.grid)
+    love.graphics.rectangle("line", x, 18, 86, 24, 4, 4)
+    love.graphics.setColor(colors.text)
+    love.graphics.print(tab.label, x + 12, 24)
+    x = x + 94
+  end
+
+  local line1, line2 = "", ""
+  if topTab == "build" then
+    local schemaText = pendingSchema and ("place exit #" .. pendingSchema.pair) or ("stock " .. schemaStock)
+    line1 = "Selected: " .. names[selected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation) .. "   Schema: " .. schemaText
+    line2 = "Left: place/replace   Right: remove   R: rotate   Wheel: zoom   WASD: camera"
+  elseif topTab == "editor" then
+    if editorSizing then
+      line1 = "Editor setup: choose board size with 1, 2, or 3"
+      line2 = "G/Esc: cancel"
+    elseif editorMode then
+      line1 = "Editor: on   Brush: " .. editorNames[editorSelected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation)
+      line2 = "G: exit editor   L: lock   T: cargo type   +/-: amount   Q: source infinite   X/I: export/import"
+      local hx, hy = cellAt(love.mouse.getPosition())
+      if inBounds(hx, hy) and board[hy][hx].kind == "source" then
+        local s = sourceAt(hx, hy)
+        if s then line1 = line1 .. "   " .. s.id .. " cargo:" .. s.cargoType .. " stock:" .. (s.remaining == -1 and "infinite" or s.remaining) end
+      elseif inBounds(hx, hy) and board[hy][hx].kind == "dest" then
+        local d = destAt(hx, hy)
+        local t = d and firstReqType(d)
+        if d then line1 = line1 .. "   " .. d.id .. " need:" .. t .. " x" .. d.req[t] end
+      end
+    else
+      line1 = "Editor: off"
+      line2 = "G: start editor setup"
+    end
+  elseif topTab == "debug" then
+    line1 = "Debug: " .. (debug and "flow overlay on" or "flow overlay off") .. "   Disturbance: B   Recalc flow: F   Rule invert: N"
+    line2 = "`: debug overlay   C: debug dump   V: replay dump   " .. ruleInversionText()
+  else
+    line1 = "Stage: " .. scenario .. "/" .. scenarios.count .. " " .. scenarioTitle .. "   Board: " .. W .. "x" .. H .. "   Zoom: " .. string.format("%.2f", zoom)
+    line2 = "State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario") .. "   Space: pause   Tab: stage"
+  end
+
+  love.graphics.setColor(colors.text)
+  love.graphics.print(line1, 24, 50)
+  love.graphics.print(editorMessage ~= "" and editorMessage or line2, 24, 74)
 end
 
 local function drawTileIcon(tile, x, y, size)
@@ -749,24 +909,280 @@ local function drawTileIcon(tile, x, y, size)
     love.graphics.circle("fill", px, py, 3)
   end
   love.graphics.setLineWidth(1)
-  love.graphics.print(tile.type:sub(1, 1):upper(), cx - 4, cy - 7)
+  love.graphics.print(tileLabel(tile), cx - 4, cy - 7)
+end
+
+local drawArrowHead
+
+local function drawNodeIcon(name, x, y, size)
+  love.graphics.setColor(name == "source" and colors.source or colors.dest)
+  love.graphics.rectangle("fill", x + 3, y + 3, size - 6, size - 6, 4, 4)
+  love.graphics.setColor(colors.text)
+  love.graphics.print(name == "source" and "A" or "B", x + size / 2 - 4, y + size / 2 - 7)
+  local d = rotationLabel(placementRotation)
+  local cx, cy = x + size / 2, y + size / 2
+  local tx, ty = cx + dx[d] * size * 0.32, cy + dy[d] * size * 0.32
+  drawArrowHead(tx, ty, name == "source" and d or opposite[d], colors.hover)
+end
+
+local function drawObstacleIcon(name, x, y, size)
+  love.graphics.setColor(name == "water" and colors.water or colors.rock)
+  love.graphics.rectangle("fill", x + 3, y + 3, size - 6, size - 6, 4, 4)
+  love.graphics.setColor(colors.text)
+  love.graphics.print(name == "water" and "W" or "R", x + size / 2 - 4, y + size / 2 - 7)
 end
 
 local function drawPlacementPanel()
-  local y = OY + H * CELL + 14
+  local palette = currentPalette()
+  local active = currentSelection()
+  local panelX, panelY, panelW = placementPanelRect()
   love.graphics.setColor(colors.panel)
-  love.graphics.rectangle("fill", OX - 6, y - 8, W * CELL + 12, 74, 4, 4)
-  for i, name in ipairs(names) do
-    local x = OX + (i - 1) * 112
-    love.graphics.setColor(i == selected and colors.selected or colors.tile)
-    love.graphics.rectangle("fill", x, y, 104, 54, 4, 4)
-    love.graphics.setColor(i == selected and colors.hover or colors.grid)
-    love.graphics.rectangle("line", x, y, 104, 54, 4, 4)
-    drawTileIcon({ type = name, rotation = placementRotation }, x + 5, y + 5, 34)
+  love.graphics.rectangle("fill", panelX, panelY, panelW, 74, 4, 4)
+  for i, name in ipairs(palette) do
+    local x, y = panelX + 12 + (i - 1) * 88, panelY + 8
+    love.graphics.setColor(i == active and colors.selected or colors.tile)
+    love.graphics.rectangle("fill", x, y, 82, 54, 4, 4)
+    love.graphics.setColor(i == active and colors.hover or colors.grid)
+    love.graphics.rectangle("line", x, y, 82, 54, 4, 4)
+    if name == "source" or name == "dest" then
+      drawNodeIcon(name, x + 5, y + 5, 34)
+    elseif name == "rock" or name == "water" then
+      drawObstacleIcon(name, x + 5, y + 5, 34)
+    else
+      drawTileIcon({ type = name, rotation = placementRotation }, x + 5, y + 5, 34)
+    end
     love.graphics.setColor(colors.text)
     love.graphics.print(i .. " " .. name, x + 42, y + 8)
-    if i == selected then love.graphics.print("rot " .. placementRotation .. " " .. rotationLabel(placementRotation), x + 42, y + 28) end
+    if name == "schema" then love.graphics.print("x" .. schemaStock, x + 42, y + 28)
+    elseif i == active then love.graphics.print("rot " .. placementRotation .. " " .. rotationLabel(placementRotation), x + 42, y + 28) end
   end
+end
+
+function consumableAt(i)
+  return consumableOrder[((i - 1) % #consumableOrder) + 1]
+end
+
+function consumableName(id)
+  if id == "cirno_wing" then return "C" end
+  if id == "momoyo_pickaxe" then return "M" end
+  return "X"
+end
+
+function consumableCount(id)
+  return id == "none" and nil or (consumableCounts[id] or 0)
+end
+
+function consumableUsable(id)
+  local n = consumableCount(id)
+  return not n or n > 0
+end
+
+function cycleConsumable(dir)
+  local from = equippedConsumable
+  equippedConsumable = ((equippedConsumable + dir - 1) % #consumableOrder) + 1
+  consumableTween = { from = from, to = equippedConsumable, dir = dir, time = 0, duration = 0.18 }
+end
+
+function randomizeRuleInversions()
+  ruleInversions.reverseFlow = not ruleInversions.reverseFlow
+  ruleInversions.swapSplitMerge = false
+  splitState = {}
+  dirty = true
+  characterCue = { id = "sagume", text = "매일 오늘같이 순탄하게 흘러가는 하루였으면 좋겠네.", time = 0, duration = 3.4 }
+end
+
+function ruleInversionText()
+  return "Reverse:" .. (ruleInversions.reverseFlow and "on" or "off") .. " Split/Merge:" .. (ruleInversions.swapSplitMerge and "on" or "off")
+end
+
+function updateConsumableTween(dt)
+  if not consumableTween then return end
+  consumableTween.time = consumableTween.time + dt
+  if consumableTween.time >= consumableTween.duration then consumableTween = nil end
+end
+
+function updateCharacterCue(dt)
+  if not characterCue then return end
+  characterCue.time = characterCue.time + dt
+  if characterCue.time >= characterCue.duration then characterCue = nil end
+end
+
+function placementConsumableId(cell)
+  local id = consumableAt(equippedConsumable)
+  if id == "cirno_wing" and cell.kind == "obstacle" and cell.type == "water" and consumableUsable(id) then return id end
+  if id == "momoyo_pickaxe" and cell.kind == "obstacle" and cell.type == "rock" and consumableUsable(id) then return id end
+end
+
+function usePlacementConsumable(id)
+  if id and consumableCounts[id] and consumableCounts[id] > 0 then consumableCounts[id] = consumableCounts[id] - 1 end
+end
+
+function drawConsumableItem(id, x, y, size, alpha)
+  local usable = consumableUsable(id)
+  alpha = alpha or 1
+  love.graphics.setColor(usable and 0.2 or 0.09, usable and 0.34 or 0.1, usable and 0.42 or 0.12, alpha)
+  if id == "momoyo_pickaxe" then love.graphics.setColor(usable and 0.46 or 0.14, usable and 0.3 or 0.1, usable and 0.18 or 0.08, alpha) end
+  if id == "none" then love.graphics.setColor(0.12, 0.13, 0.14, alpha) end
+  love.graphics.rectangle("fill", x - size / 2, y - size / 2, size, size, 5, 5)
+  love.graphics.setColor(colors.grid[1], colors.grid[2], colors.grid[3], alpha)
+  love.graphics.rectangle("line", x - size / 2, y - size / 2, size, size, 5, 5)
+  love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], usable and alpha or alpha * 0.45)
+  love.graphics.print(consumableName(id), x - 4, y - 8)
+  local n = consumableCount(id)
+  if n then love.graphics.print(tostring(n), x + size / 2 - 16, y + size / 2 - 18) end
+end
+
+function drawConsumableSlots()
+  if editorMode or editorSizing then return end
+  local screenW, screenH = screenSize()
+  local _, panelY = placementPanelRect()
+  local cx, y = screenW * 0.5, panelY - 44
+  local leftX, rightX, side, centerSize = cx - 52, cx + 52, 52, 72
+  love.graphics.setColor(0, 0, 0, 0.22)
+  love.graphics.rectangle("fill", leftX - side / 2, y - side / 2, side, side, 5, 5)
+  love.graphics.rectangle("fill", rightX - side / 2, y - side / 2, side, side, 5, 5)
+  love.graphics.rectangle("fill", cx - centerSize / 2, y - centerSize / 2, centerSize, centerSize, 6, 6)
+  if consumableTween then
+    local tt = easeOutQuint(math.min(1, consumableTween.time / consumableTween.duration))
+    local d = consumableTween.dir
+    drawConsumableItem(consumableAt(consumableTween.from - d), cx - d * 104, y, side, 1 - tt)
+    drawConsumableItem(consumableAt(consumableTween.from), cx - d * 52 * tt, y, centerSize + (side - centerSize) * tt, 1)
+    drawConsumableItem(consumableAt(consumableTween.to), cx + d * 52 * (1 - tt), y, side + (centerSize - side) * tt, 1)
+    drawConsumableItem(consumableAt(consumableTween.to + d), cx + d * 104, y, side, tt)
+  else
+    drawConsumableItem(consumableAt(equippedConsumable - 1), leftX, y, side, 0.78)
+    drawConsumableItem(consumableAt(equippedConsumable + 1), rightX, y, side, 0.78)
+    drawConsumableItem(consumableAt(equippedConsumable), cx, y, centerSize, 1)
+  end
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Q", leftX - 5, y + side / 2 + 4)
+  love.graphics.print("E", rightX - 5, y + side / 2 + 4)
+end
+
+function drawImageBox(img, x, y, size, alpha)
+  alpha = alpha or 1
+  love.graphics.setColor(0.04, 0.05, 0.06, 0.72 * alpha)
+  love.graphics.rectangle("fill", x, y, size, size, 6, 6)
+  if img and love.graphics.draw then
+    local scale = size / math.max(img:getWidth(), img:getHeight())
+    love.graphics.setColor(1, 1, 1, alpha)
+    love.graphics.draw(img, x + (size - img:getWidth() * scale) * 0.5, y + (size - img:getHeight() * scale) * 0.5, 0, scale, scale)
+  end
+  love.graphics.setColor(colors.grid[1], colors.grid[2], colors.grid[3], alpha)
+  love.graphics.rectangle("line", x, y, size, size, 6, 6)
+end
+
+function drawPlayerPortrait()
+  if editorSizing then return end
+  local _, panelY = placementPanelRect()
+  drawImageBox(portraits.nitori, 22, panelY - 122, 106, 1)
+end
+
+function drawSagumeLine(x, y, alpha)
+  love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+  love.graphics.print("매일 오늘같이 ", x, y)
+  love.graphics.setColor(1, 0, 0, alpha)
+  love.graphics.print("순탄하게 흘러가는", x + 96, y)
+  love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+  love.graphics.print(" 하루였으면 좋겠네.", x + 214, y)
+end
+
+function drawCharacterCue()
+  if not characterCue then return end
+  local t = math.min(1, characterCue.time / 0.28)
+  local out = math.min(1, (characterCue.duration - characterCue.time) / 0.35)
+  local alpha = easeOutQuint(math.min(t, out))
+  if characterCue.id == "seija" then
+    local x, y = 24, 112 - 18 * (1 - t)
+    drawImageBox(portraits.seija, x, y, 82, alpha)
+    love.graphics.setColor(0, 0, 0, 0.78 * alpha)
+    love.graphics.rectangle("fill", x + 92, y + 10, 360, 54, 6, 6)
+    love.graphics.setColor(1, 0.25, 0.2, alpha)
+    love.graphics.rectangle("line", x + 92, y + 10, 360, 54, 6, 6)
+    love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+    love.graphics.print(characterCue.text, x + 110, y + 28)
+  elseif characterCue.id == "sagume" then
+    local screenW = screenSize()
+    local x, y = screenW - 438, 156 - 14 * (1 - t)
+    drawImageBox(portraits.sagume, x, y, 74, alpha)
+    love.graphics.setColor(0, 0, 0, 0.7 * alpha)
+    love.graphics.rectangle("fill", x - 410, y + 8, 400, 66, 6, 6)
+    love.graphics.setColor(0.72, 0.55, 0.9, alpha)
+    love.graphics.rectangle("line", x - 410, y + 8, 400, 66, 6, 6)
+    drawSagumeLine(x - 396, y + 32, alpha)
+  end
+end
+
+local function drawProgressPanel()
+  local screenW, screenH = screenSize()
+  local w, h = 284, 232
+  local x, y = screenW - w - 16, (screenH - h) * 0.5
+  love.graphics.setColor(colors.panel)
+  love.graphics.rectangle("fill", x, y, w, h, 5, 5)
+  love.graphics.setColor(colors.grid)
+  love.graphics.rectangle("line", x, y, w, h, 5, 5)
+
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Sources", x + 16, y + 14)
+  local lineY = y + 38
+  for _, s in ipairs(sources) do
+    love.graphics.print(s.id .. "  " .. s.output .. "  " .. s.cargoType .. "  stock:" .. (unlimitedStock and "unlimited" or tostring(s.remaining)), x + 16, lineY)
+    lineY = lineY + 20
+  end
+  lineY = lineY + 10
+  love.graphics.print("Destinations", x + 16, lineY)
+  lineY = lineY + 24
+  for _, d in ipairs(dests) do
+    for t, n in pairs(d.req) do
+      love.graphics.print(d.id .. "  in:" .. table.concat(d.inputs or dirs, "") .. "  " .. t .. " " .. tostring(d.got[t] or 0) .. "/" .. n .. "  wrong:" .. d.wrong, x + 16, lineY)
+      lineY = lineY + 20
+      if lineY > y + h - 22 then return end
+    end
+  end
+end
+
+local function drawSchemaLinks()
+  for y = 1, H do
+    for x = 1, W do
+      local cell = board[y][x]
+      if cell.kind == "tile" and cell.type == "schema_in" then
+        local ox, oy = findSchemaPart(cell.pair, "out")
+        if ox then
+          local ax, ay = center(x, y)
+          local bx, by = center(ox, oy)
+          local vx, vy = bx - ax, by - ay
+          local len = math.max(1, math.sqrt(vx * vx + vy * vy))
+          local nx, ny = vx / len, vy / len
+          local px, py = -ny, nx
+          love.graphics.setColor(0.72, 0.48, 1, 0.45)
+          love.graphics.setLineWidth(2)
+          love.graphics.line(ax, ay, bx, by)
+          for i = 0, 2 do
+            local t = (simTime * 1.6 + i / 3) % 1
+            local mx, my = ax + vx * t, ay + vy * t
+            love.graphics.setColor(0.82, 0.65, 1, 0.35 + 0.55 * t)
+            love.graphics.circle("fill", mx, my, 3 + 2 * t)
+          end
+          love.graphics.setColor(0.82, 0.65, 1, 0.9)
+          love.graphics.polygon("fill", bx, by, bx - nx * 14 + px * 6, by - ny * 14 + py * 6, bx - nx * 14 - px * 6, by - ny * 14 - py * 6)
+          love.graphics.setColor(0.72, 0.48, 1, 0.9)
+          love.graphics.print("#" .. cell.pair, (ax + bx) / 2 - 8, (ay + by) / 2 - 8)
+        end
+      end
+    end
+  end
+  love.graphics.setLineWidth(1)
+end
+
+local drawTile
+
+local function drawSchemaExitPreview(hx, hy)
+  if not pendingSchema or not inBounds(hx, hy) then return end
+  local sx, sy = deniedShakeOffset(hx, hy)
+  local bx, by = OX + (hx - 1) * CELL + sx, OY + (hy - 1) * CELL + sy
+  love.graphics.setColor(colors.schema[1], colors.schema[2], colors.schema[3], 0.42)
+  love.graphics.rectangle("fill", bx, by, CELL - 1, CELL - 1)
+  drawTile(hx, hy, { kind = "tile", type = "schema_out", pair = pendingSchema.pair, rotation = placementRotation })
 end
 
 local function transformedDrawPoint(cx, cy, d, radius, tween)
@@ -788,7 +1204,10 @@ local function tileVisualCenter(x, y, cell)
     local gx, gy = tweenRegionLocal(rt.gx, rt.gy, rt.size, rt.effect, t)
     return OX + (rt.x + gx - 1) * CELL, OY + (rt.y + gy - 1) * CELL
   end
-  return center(x, y)
+  local cx, cy = center(x, y)
+  local sx, sy = deniedShakeOffset(x, y)
+  cx, cy = cx + sx, cy + sy
+  return cx, cy
 end
 
 local function regionTweenPoint(rt, lx, ly)
@@ -818,7 +1237,7 @@ local function drawRegionTile(cell)
 
   local cx, cy = regionTweenPoint(rt, 0, 0)
   love.graphics.setColor(0.86, 0.88, 0.8)
-  love.graphics.print(cell.type:sub(1, 1):upper(), cx - 4, cy - 8)
+  love.graphics.print(tileLabel(cell), cx - 4, cy - 8)
   local rot = regionBaseRotation(cell)
   for _, segment in ipairs(baseTileSegments(cell.type)) do
     local axl, ayl = dirLocalPoint(segment[1], rot)
@@ -847,13 +1266,13 @@ local function drawRegionTile(cell)
   end
 end
 
-local function drawTile(x, y, cell)
+function drawTile(x, y, cell)
   if cell.regionTween then return drawRegionTile(cell) end
   local cx, cy = tileVisualCenter(x, y, cell)
   love.graphics.setColor(tileColor(cell))
   love.graphics.rectangle("fill", cx - CELL * 0.5, cy - CELL * 0.5, CELL - 1, CELL - 1)
   love.graphics.setColor(0.86, 0.88, 0.8)
-  love.graphics.print(cell.type:sub(1, 1):upper(), cx - 4, cy - 8)
+  love.graphics.print(tileLabel(cell), cx - 4, cy - 8)
   local rot = visualRotation(cell)
   for _, segment in ipairs(baseTileSegments(cell.type)) do
     local ax, ay = tileDrawPoint(cx, cy, segment[1], rot, cell.effectTween)
@@ -878,6 +1297,66 @@ local function drawTile(x, y, cell)
   end
 end
 
+function drawDraggedTile()
+  if not dragStart or not inBounds(dragStart.x, dragStart.y) then return end
+  local cell = board[dragStart.y][dragStart.x]
+  if cell.kind ~= "tile" then return end
+  local mx, my = love.mouse.getPosition()
+  local color = tileColor(cell)
+  love.graphics.setColor(color[1], color[2], color[3], 0.46)
+  love.graphics.rectangle("fill", mx - CELL * 0.5, my - CELL * 0.5, CELL - 1, CELL - 1, 4, 4)
+  love.graphics.setColor(0.86, 0.88, 0.8, 0.72)
+  love.graphics.print(tileLabel(cell), mx - 4, my - 8)
+  for _, segment in ipairs(baseTileSegments(cell.type)) do
+    local ax, ay = drawPoint(mx, my, segment[1], PORT_RADIUS, cell.rotation)
+    local bx, by = drawPoint(mx, my, segment[2], PORT_RADIUS, cell.rotation)
+    if cell.type == "corner" then
+      love.graphics.line(ax, ay, mx, my)
+      love.graphics.line(mx, my, bx, by)
+    else
+      love.graphics.line(ax, ay, bx, by)
+    end
+  end
+  local inputs, outputs = baseTilePorts(cell.type)
+  love.graphics.setColor(0.1, 0.12, 0.13, 0.72)
+  for _, d in ipairs(inputs) do
+    local px, py = drawPoint(mx, my, d, PORT_RADIUS, cell.rotation)
+    love.graphics.rectangle("fill", px - 5, py - 5, 10, 10)
+  end
+  love.graphics.setColor(1, 0.86, 0.28, 0.72)
+  for _, d in ipairs(outputs) do
+    local px, py = drawPoint(mx, my, d, PORT_RADIUS, cell.rotation)
+    love.graphics.circle("fill", px, py, 5)
+  end
+end
+
+local function drawObstacle(_, _, cell, bx, by)
+  local rt = cell.regionTween
+  local function p(px, py)
+    local lx, ly = matrixPoint(rt and rt.fromTransform or cell.transform, px / CELL - 0.5, py / CELL - 0.5)
+    if rt then
+      return regionTweenPoint(rt, lx, ly)
+    end
+    return bx + CELL * 0.5 + lx * CELL, by + CELL * 0.5 + ly * CELL
+  end
+  local x1, y1 = p(3, 3)
+  local x2, y2 = p(CELL - 4, 3)
+  local x3, y3 = p(CELL - 4, CELL - 4)
+  local x4, y4 = p(3, CELL - 4)
+  love.graphics.setColor(cell.type == "water" and colors.water or colors.rock)
+  love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
+  love.graphics.setColor(0.82, 0.86, 0.82)
+  if cell.type == "water" then
+    local ax, ay = p(10, 22); local bx1, by1 = p(20, 18); local cx, cy = p(30, 22); local dx1, dy1 = p(40, 18)
+    love.graphics.line(ax, ay, bx1, by1, cx, cy, dx1, dy1)
+    ax, ay = p(10, 30); bx1, by1 = p(20, 26); cx, cy = p(30, 30); dx1, dy1 = p(40, 26)
+    love.graphics.line(ax, ay, bx1, by1, cx, cy, dx1, dy1)
+  else
+    local ax, ay = p(14, 34); local bx1, by1 = p(22, 14); local cx, cy = p(36, 22); local dx1, dy1 = p(40, 36)
+    love.graphics.polygon("fill", ax, ay, bx1, by1, cx, cy, dx1, dy1)
+  end
+end
+
 local function drawFlow()
   if not flows or not flows.lanes then return end
   for _, lane in pairs(flows.lanes) do
@@ -893,9 +1372,17 @@ local function drawFlow()
       love.graphics.line(ax, ay, bx, by)
     end
     love.graphics.circle("fill", bx, by, 4)
-    if debug then
-      love.graphics.setColor(colors.text)
-      love.graphics.print(tostring(lane.strength), (ax + bx) / 2, (ay + by) / 2)
+    if not lane.blocked then
+      local p = (simTime * 1.7 + (lane.dist or 0) * 0.19) % 1
+      local px, py = laneWorldPoint(lane, p)
+      local qx, qy = laneWorldPoint(lane, math.min(1, p + 0.05))
+      local vx, vy = qx - px, qy - py
+      local len = math.max(1, math.sqrt(vx * vx + vy * vy))
+      vx, vy = vx / len, vy / len
+      local sx, sy = -vy, vx
+      love.graphics.setColor(1, 0.95, 0.45)
+      love.graphics.circle("fill", px, py, 3)
+      love.graphics.polygon("fill", px + vx * 8, py + vy * 8, px - vx * 5 + sx * 4, py - vy * 5 + sy * 4, px - vx * 5 - sx * 4, py - vy * 5 - sy * 4)
     end
   end
   love.graphics.setLineWidth(1)
@@ -942,7 +1429,7 @@ end
 local function regionHasActiveLane(x, y, size)
   for yy = y, y + size - 1 do
     for xx = x, x + size - 1 do
-      if board[yy][xx].kind == "source" or board[yy][xx].kind == "dest" then return false end
+      if not canModifyCell(board[yy][xx], "disturbance") then return false end
     end
   end
   for _, lane in pairs(flows.lanes) do
@@ -967,11 +1454,17 @@ local function startDisturbance()
   local x, y, size = randomDisturbanceRegion()
   if not x then return end
   local effect = disturbanceEffects[math.random(1, #disturbanceEffects)]
-  pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = disturbanceDelay, phase = "alert" }
+  pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = config.disturbanceDelay, phase = "alert" }
+  characterCue = { id = "seija", text = ({ "정말 망가트리기 좋게 생긴 공장이네", "내가 더 재밌게 해줄게" })[math.random(1, 2)], time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
   replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = effect.id }
 end
 
 local function applyDisturbance(d)
+  for y = d.y, d.y + d.size - 1 do
+    for x = d.x, d.x + d.size - 1 do
+      if not canModifyCell(board[y][x], "disturbance") then return end
+    end
+  end
   transformCargoInRegion(d)
   local moved = {}
   for y = d.y, d.y + d.size - 1 do
@@ -984,6 +1477,9 @@ local function applyDisturbance(d)
       if cell.kind == "tile" then
         cell.regionTween = { x = d.x, y = d.y, size = d.size, effect = d.effect, gx = gx, gy = gy, time = 0, duration = disturbanceTweenDuration }
         transformTileRotation(cell, d.effect)
+      elseif cell.kind == "obstacle" then
+        local fromTransform = cell.transform
+        cell.regionTween = { x = d.x, y = d.y, size = d.size, effect = d.effect, gx = gx, gy = gy, time = 0, duration = disturbanceTweenDuration, fromTransform = fromTransform, toTransform = composeMatrix(effectMatrix(d.effect), fromTransform) }
       end
     end
   end
@@ -1082,7 +1578,7 @@ end
 local function exportDebugState()
   local lines = {
     "Nitori Factory Debug State",
-    "scenario=" .. scenario .. " status=" .. status .. " paused=" .. tostring(paused) .. " unlimitedStock=" .. tostring(unlimitedStock),
+    "scenario=" .. scenario .. " status=" .. status .. " paused=" .. tostring(paused) .. " unlimitedStock=" .. tostring(unlimitedStock) .. " " .. ruleInversionText(),
     "selected=" .. names[selected] .. " placementRotation=" .. placementRotation .. " zoom=" .. string.format("%.2f", zoom),
     "",
     "Board:",
@@ -1092,20 +1588,26 @@ local function exportDebugState()
     local row = {}
     for x = 1, W do
       local cell = board[y][x]
-      row[#row + 1] = cell.kind == "tile" and (cell.type:sub(1, 1):upper() .. cell.rotation) or mark[cell.kind]
+      row[#row + 1] = boardToken(cell)
     end
     lines[#lines + 1] = table.concat(row, " ")
   end
   lines[#lines + 1] = ""
   lines[#lines + 1] = "Sources:"
   for _, s in ipairs(sources) do
-    lines[#lines + 1] = string.format("%s pos=%d,%d out=%s strength=%s cargo=%s remaining=%s", s.id, s.x, s.y, s.output, s.strength, s.cargoType, s.remaining)
+    local received = "{}"
+    if s.received then
+      local parts = {}
+      for t, n in pairs(s.received) do parts[#parts + 1] = t .. "=" .. n end
+      received = table.concat(parts, ",")
+    end
+    lines[#lines + 1] = string.format("%s pos=%d,%d out=%s rotation=%s strength=%s cargo=%s remaining=%s received=%s", s.id, s.x, s.y, s.output, s.rotation, s.strength, s.cargoType, s.remaining, received)
   end
   lines[#lines + 1] = ""
   lines[#lines + 1] = "Destinations:"
   for _, d in ipairs(dests) do
     for t, need in pairs(d.req) do
-      lines[#lines + 1] = string.format("%s pos=%d,%d %s=%d/%d wrong=%d", d.id, d.x, d.y, t, d.got[t] or 0, need, d.wrong)
+      lines[#lines + 1] = string.format("%s pos=%d,%d inputs=%s rotation=%s %s=%d/%d wrong=%d", d.id, d.x, d.y, table.concat(d.inputs or dirs, ","), d.rotation, t, d.got[t] or 0, need, d.wrong)
     end
   end
   lines[#lines + 1] = ""
@@ -1125,8 +1627,92 @@ local function exportDebugState()
   return table.concat(lines, "\n")
 end
 
-local function q(s)
-  return string.format("%q", tostring(s))
+local q, luaValue, copyReq = common.q, common.luaValue, common.copyReq
+
+local function exportStageData()
+  local data = {
+    version = 1,
+    name = scenarioTitle ~= "" and scenarioTitle or ("Stage " .. scenario),
+    size = { w = W, h = H },
+    schemaStock = schemaStock,
+    tileStock = { straight = "infinite", corner = "infinite", splitter = "infinite", merger = "infinite", bridge = "infinite", schema = schemaStock, backdoor = "infinite" },
+    sources = {},
+    destinations = {},
+    cells = {},
+  }
+  for _, s in ipairs(sources) do
+    data.sources[#data.sources + 1] = { id = s.id, x = s.x, y = s.y, output = s.output, cargoType = s.cargoType, stock = s.remaining == -1 and "infinite" or s.remaining, interval = s.interval }
+  end
+  for _, d in ipairs(dests) do
+    data.destinations[#data.destinations + 1] = { id = d.id, x = d.x, y = d.y, inputs = d.inputs or dirs, req = copyReq(d.req), locked = true }
+  end
+  for y = 1, H do
+    for x = 1, W do
+      local cell = board[y][x]
+      if cell.kind == "tile" then
+        data.cells[#data.cells + 1] = { x = x, y = y, kind = "tile", type = cell.type, rotation = cell.rotation, pair = cell.pair, locked = cell.immutable or false }
+      elseif cell.kind == "obstacle" then
+        data.cells[#data.cells + 1] = { x = x, y = y, kind = "obstacle", type = cell.type, locked = cell.immutable or false, transform = cell.transform }
+      end
+    end
+  end
+  return data
+end
+
+local function stageDumpText()
+  return "NitoriStage = " .. luaValue(exportStageData())
+end
+
+local function applyStageData(data)
+  if type(data) ~= "table" or type(data.size) ~= "table" then return false, "invalid stage data" end
+  resetScenario(0, data.size.w or W, data.size.h or H, data.name or "Imported Stage")
+  schemaStock = data.schemaStock or (data.tileStock and data.tileStock.schema) or schemaStock
+  if schemaStock == "infinite" then schemaStock = 99 end
+  for _, s in ipairs(data.sources or {}) do
+    setSource({ id = s.id or "A", x = s.x, y = s.y, output = s.output or "E", strength = 1, cargoType = s.cargoType or "box", remaining = s.stock == "infinite" and -1 or (s.stock or 0), timer = 0, interval = s.interval or 1 })
+  end
+  for _, d in ipairs(data.destinations or {}) do
+    setDest({ id = d.id or "B", x = d.x, y = d.y, inputs = d.inputs or dirs, req = d.req or { box = 1 }, got = {}, wrong = 0 })
+  end
+  local maxPair = 0
+  for _, c in ipairs(data.cells or {}) do
+    if inBounds(c.x, c.y) and canModifyCell(board[c.y][c.x], "editor") then
+      if c.kind == "tile" then
+        board[c.y][c.x] = { kind = "tile", type = c.type, rotation = c.rotation or 0, pair = c.pair, immutable = c.locked or false }
+        if c.pair then maxPair = math.max(maxPair, c.pair) end
+      elseif c.kind == "obstacle" then
+        board[c.y][c.x] = { kind = "obstacle", type = c.type or "rock", immutable = c.locked ~= false, transform = c.transform }
+      end
+    end
+  end
+  nextSchemaId, pendingSchema = maxPair + 1, nil
+  editorMode, editorSizing = true, false
+  dirty = true
+  recalcFlow()
+  editorMessage = "Imported stage: " .. scenarioTitle
+  return true
+end
+
+local function parseStageText(text)
+  local fn = load("return " .. text, "stage", "t", {})
+  if fn then
+    local ok, data = pcall(fn)
+    if ok then return data end
+  end
+  local env = {}
+  fn = load(text .. "\nreturn NitoriStage", "stage", "t", env)
+  if not fn then return nil end
+  local ok, data = pcall(fn)
+  return ok and data or nil
+end
+
+local function importStageFromClipboard()
+  local ok, text = pcall(function() return love.system.getClipboardText() end)
+  if not ok or not text or text == "" then editorMessage = "Import failed: clipboard is empty"; return end
+  local data = parseStageText(text)
+  if not data then editorMessage = "Import failed: expected NitoriStage table"; return end
+  local applied, err = applyStageData(data)
+  if not applied then editorMessage = "Import failed: " .. tostring(err) end
 end
 
 local function replayDumpText()
@@ -1143,9 +1729,12 @@ local function replayDumpText()
     if e.action == "scenario" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, scenario = %d },", e.t, q(e.action), e.scenario)
     elseif e.action == "place" then
-      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, tile = %s, rotation = %d },", e.t, q(e.action), e.x, e.y, q(e.tile), e.rotation)
+      local pair = e.pair and (", pair = " .. e.pair) or ""
+      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, tile = %s, rotation = %d%s },", e.t, q(e.action), e.x, e.y, q(e.tile), e.rotation, pair)
     elseif e.action == "remove" or e.action == "rotate" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d },", e.t, q(e.action), e.x, e.y)
+    elseif e.action == "swap" then
+      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, ax = %d, ay = %d, bx = %d, by = %d },", e.t, q(e.action), e.ax, e.ay, e.bx, e.by)
     elseif e.action == "disturbance_alert" or e.action == "disturbance_apply" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, size = %d, effect = %s },", e.t, q(e.action), e.x, e.y, e.size, q(e.effect))
     elseif e.action == "unlimited_stock" then
@@ -1160,7 +1749,7 @@ local function replayDumpText()
     local row = {}
     for x = 1, W do
       local cell = board[y][x]
-      row[#row + 1] = cell.kind == "tile" and (cell.type:sub(1, 1):upper() .. cell.rotation) or mark[cell.kind]
+      row[#row + 1] = boardToken(cell)
     end
     lines[#lines + 1] = "      " .. q(table.concat(row, " ")) .. ","
   end
@@ -1187,7 +1776,8 @@ end
 
 local function showDump(title, text)
   local copied = pcall(function() love.system.setClipboardText(text) end)
-  local opened = love.system.openURL and pcall(function()
+  local isWeb = love.system.getOS and love.system.getOS() == "Web"
+  local opened = isWeb and love.system.openURL and pcall(function()
     love.system.openURL("https://djejsgames.github.io/rreevveerrssee/#nitori_dump=" .. urlEncode(title) .. ":" .. urlEncode(text))
   end)
   if not opened and not copied then print(title .. "\n" .. text) end
@@ -1195,8 +1785,19 @@ end
 
 function love.load()
   math.randomseed(os.time())
-  love.graphics.setFont(love.graphics.newFont(13))
-  selected, placementRotation, paused, debug, unlimitedStock = 1, 0, false, true, false
+  love.graphics.setFont(love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13))
+  if love.graphics.newImage then
+    portraits.nitori = love.graphics.newImage("assets/Images/Nitori.png")
+    portraits.seija = love.graphics.newImage("assets/Images/Seija.png")
+    portraits.sagume = love.graphics.newImage("assets/Images/Sagume.png")
+  end
+  if love.audio and love.audio.newSource then
+    bgm = love.audio.newSource("assets/audio/自宅にて.mp3", "stream")
+    bgm:setLooping(true)
+    bgm:setVolume(0.45)
+    bgm:play()
+  end
+  selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
   loadScenario(1)
 end
 
@@ -1209,6 +1810,9 @@ function love.update(dt)
   remapWaitingCargo()
   updateTileTweens(dt)
   updateCargoTweens(dt)
+  updateConsumableTween(dt)
+  updateCharacterCue(dt)
+  updateDeniedShakes(dt)
   local move = cameraSpeed * dt
   if love.keyboard.isDown("a") then cameraX = cameraX + move end
   if love.keyboard.isDown("d") then cameraX = cameraX - move end
@@ -1221,11 +1825,91 @@ function love.update(dt)
   end
 end
 
+local function drawHoverBorder(x, y, ox, oy, color)
+  ox, oy = ox or 0, oy or 0
+  love.graphics.setColor(color or colors.hover)
+  love.graphics.setLineWidth(3)
+  love.graphics.rectangle("line", OX + (x - 1) * CELL + 2 + ox, OY + (y - 1) * CELL + 2 + oy, CELL - 4, CELL - 4, 4, 4)
+  love.graphics.setLineWidth(1)
+end
+
+local function drawDeniedBorders()
+  for k in pairs(deniedShakes) do
+    local x, y = k:match("^(%d+),(%d+)$")
+    x, y = tonumber(x), tonumber(y)
+    if x and y then
+      local ox, oy = deniedShakeOffset(x, y)
+      drawHoverBorder(x, y, ox, oy, colors.block)
+    end
+  end
+end
+
+function drawArrowHead(x, y, dir, color)
+  local vx, vy = dx[dir], dy[dir]
+  local px, py = -vy, vx
+  love.graphics.setColor(color)
+  love.graphics.polygon("fill", x, y, x - vx * 10 + px * 5, y - vy * 10 + py * 5, x - vx * 10 - px * 5, y - vy * 10 - py * 5)
+end
+
+local function drawSourceCell(cell, bx, by)
+  love.graphics.setColor(colors.source)
+  love.graphics.rectangle("fill", bx + 4, by + 4, CELL - 8, CELL - 8, 4, 4)
+  love.graphics.setColor(colors.text)
+  love.graphics.print(cell.id, bx + 10, by + 13)
+  love.graphics.print(rotationLabel(cell.rotation), bx + 28, by + 28)
+  local cx, cy = bx + CELL * 0.5, by + CELL * 0.5
+  local tx, ty = cx + dx[cell.output] * 16, cy + dy[cell.output] * 16
+  love.graphics.setColor(colors.cargo)
+  love.graphics.setLineWidth(3)
+  love.graphics.line(cx, cy, tx, ty)
+  drawArrowHead(tx, ty, cell.output, colors.cargo)
+  love.graphics.setLineWidth(1)
+end
+
+local function drawDestCell(cell, bx, by)
+  love.graphics.setColor(colors.dest)
+  love.graphics.rectangle("fill", bx + 4, by + 4, CELL - 8, CELL - 8, 4, 4)
+  love.graphics.setColor(colors.text)
+  love.graphics.print(cell.id, bx + 10, by + 13)
+  love.graphics.print(rotationLabel(cell.rotation), bx + 28, by + 28)
+  local cx, cy = bx + CELL * 0.5, by + CELL * 0.5
+  love.graphics.setLineWidth(2)
+  for _, input in ipairs(cell.inputs or dirs) do
+    local sx, sy = cx + dx[input] * 19, cy + dy[input] * 19
+    local tx, ty = cx + dx[input] * 8, cy + dy[input] * 8
+    love.graphics.setColor(colors.hover)
+    love.graphics.line(sx, sy, tx, ty)
+    drawArrowHead(tx, ty, opposite[input], colors.hover)
+  end
+  love.graphics.setLineWidth(1)
+end
+
+local function drawEditorMarker(cell, bx, by)
+  if not editorMode or not cell.immutable or cell.kind == "source" or cell.kind == "dest" then return end
+  love.graphics.setColor(colors.block)
+  love.graphics.rectangle("fill", bx + CELL - 12, by + 4, 8, 8, 2, 2)
+end
+
+local function drawEditorSizingOverlay()
+  if not editorSizing then return end
+  local w, h = 460, 172
+  local x, y = 360, 170
+  love.graphics.setColor(0, 0, 0, 0.84)
+  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+  love.graphics.setColor(colors.hover)
+  love.graphics.setLineWidth(2)
+  love.graphics.rectangle("line", x, y, w, h, 6, 6)
+  love.graphics.setLineWidth(1)
+  love.graphics.setColor(colors.text)
+  love.graphics.print("New Stage Size", x + 28, y + 24)
+  for i, size in ipairs(EDITOR_BOARD_SIZES) do
+    love.graphics.print(i .. "  " .. size.label, x + 28, y + 24 + i * 30)
+  end
+  love.graphics.print("Esc/G: cancel", x + 28, y + h - 30)
+end
+
 function love.draw()
   love.graphics.clear(colors.bg)
-  love.graphics.setColor(colors.text)
-  love.graphics.print("Wheel: zoom  WASD: camera  Left: place/replace  Right: remove  R: rotate  B: disturbance  U: unlimited stock  Space: pause  `: debug  C: copy state  V: replay  F: flow  Tab: scenario", 24, 18)
-  love.graphics.print("Selected: " .. names[selected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation) .. "   Zoom: " .. string.format("%.2f", zoom) .. "   Scenario: " .. scenario .. "   State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario"), 24, 42)
 
   local hx, hy = cellAt(love.mouse.getPosition())
   love.graphics.push()
@@ -1233,92 +1917,207 @@ function love.draw()
   love.graphics.scale(zoom)
   for y = 1, H do
     for x = 1, W do
+      local sx, sy = deniedShakeOffset(x, y)
+      local bx, by = OX + (x - 1) * CELL + sx, OY + (y - 1) * CELL + sy
       love.graphics.setColor(colors.empty)
-      love.graphics.rectangle("fill", OX + (x - 1) * CELL, OY + (y - 1) * CELL, CELL - 1, CELL - 1)
+      love.graphics.rectangle("fill", bx, by, CELL - 1, CELL - 1)
       local cell = board[y][x]
       if cell.kind == "tile" then drawTile(x, y, cell) end
-      if cell.kind == "source" then
-        love.graphics.setColor(colors.source)
-        love.graphics.rectangle("fill", OX + (x - 1) * CELL + 4, OY + (y - 1) * CELL + 4, CELL - 8, CELL - 8, 4, 4)
-        love.graphics.setColor(colors.text); love.graphics.print(cell.id, OX + (x - 1) * CELL + 13, OY + (y - 1) * CELL + 15)
+      if cell.kind == "obstacle" then
+        drawObstacle(x, y, cell, bx, by)
+      elseif cell.kind == "source" then
+        drawSourceCell(cell, bx, by)
       elseif cell.kind == "dest" then
-        love.graphics.setColor(colors.dest)
-        love.graphics.rectangle("fill", OX + (x - 1) * CELL + 4, OY + (y - 1) * CELL + 4, CELL - 8, CELL - 8, 4, 4)
-        love.graphics.setColor(colors.text); love.graphics.print(cell.id, OX + (x - 1) * CELL + 13, OY + (y - 1) * CELL + 15)
+        drawDestCell(cell, bx, by)
       end
+      drawEditorMarker(cell, bx, by)
       love.graphics.setColor(colors.grid)
-      love.graphics.rectangle("line", OX + (x - 1) * CELL, OY + (y - 1) * CELL, CELL, CELL)
+      love.graphics.rectangle("line", bx, by, CELL, CELL)
     end
   end
-  if inBounds(hx, hy) then
-    love.graphics.setColor(colors.hover)
-    love.graphics.setLineWidth(3)
-    love.graphics.rectangle("line", OX + (hx - 1) * CELL + 2, OY + (hy - 1) * CELL + 2, CELL - 4, CELL - 4, 4, 4)
-    love.graphics.setLineWidth(1)
+  drawSchemaExitPreview(hx, hy)
+  if inBounds(hx, hy) and not deniedShakes[key(hx, hy)] then
+    local id = (not editorMode) and placementConsumableId(board[hy][hx])
+    drawHoverBorder(hx, hy, nil, nil, id and { 0.25, 1, 0.38 } or nil)
   end
+  drawSchemaLinks()
   drawDisturbanceAlertWorld()
   if debug then drawFlow() end
   drawCargo()
+  drawDeniedBorders()
   love.graphics.pop()
+  drawDraggedTile()
+  drawPlayerPortrait()
+  drawConsumableSlots()
   drawPlacementPanel()
+  drawProgressPanel()
+  drawCharacterCue()
+  drawTopPanel()
   drawDisturbanceAlertUi()
+  drawEditorSizingOverlay()
+end
 
-  local panelX = OX + W * CELL + 24
-  love.graphics.setColor(colors.text)
-  love.graphics.print("Sources", panelX, OY)
-  local line = 1
-  for _, s in ipairs(sources) do
-    love.graphics.print(s.id .. " " .. s.cargoType .. " stock:" .. (unlimitedStock and "unlimited" or tostring(s.remaining)), panelX, OY + line * 20)
-    line = line + 1
+function leftClickBoard(x, y)
+  if editorMode then
+    placeEditorItem(x, y, editorNames[editorSelected])
+    return
   end
-  line = line + 1
-  love.graphics.print("Destinations", panelX, OY + line * 20)
-  line = line + 1
-  for _, d in ipairs(dests) do
-    for t, n in pairs(d.req) do
-      love.graphics.print(d.id .. " " .. t .. " " .. tostring(d.got[t] or 0) .. "/" .. n .. " wrong:" .. d.wrong, panelX, OY + line * 20)
-      line = line + 1
+  local consumeId = placementConsumableId(board[y][x])
+  if cellHasCargo(x, y) or (not consumeId and not canModifyCell(board[y][x], "player")) then denyCellAction(x, y); return end
+  if pendingSchema then
+    if key(x, y) == key(pendingSchema.x, pendingSchema.y) then denyCellAction(x, y); return end
+    if board[y][x].kind ~= "empty" and not consumeId then denyCellAction(x, y); return end
+    if consumeId then board[y][x] = { kind = "empty" } end
+    if setSchemaTile(x, y, "out", pendingSchema.pair, placementRotation) then
+      usePlacementConsumable(consumeId)
+      schemaStock = math.max(0, schemaStock - 1)
+      replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = "schema_out", rotation = placementRotation, pair = pendingSchema.pair }
+      pendingSchema = nil
     end
+  elseif names[selected] == "schema" then
+    if schemaStock <= 0 then denyCellAction(x, y); return end
+    if board[y][x].kind ~= "empty" and not consumeId then denyCellAction(x, y); return end
+    local pair = nextSchemaId
+    nextSchemaId = nextSchemaId + 1
+    if consumeId then board[y][x] = { kind = "empty" } end
+    if setSchemaTile(x, y, "in", pair, placementRotation) then
+      usePlacementConsumable(consumeId)
+      pendingSchema = { pair = pair, x = x, y = y }
+      replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = "schema_in", rotation = placementRotation, pair = pair }
+    end
+  else
+    if consumeId then board[y][x] = { kind = "empty" } end
+    if setTile(x, y, names[selected], placementRotation) then
+      usePlacementConsumable(consumeId)
+    replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = names[selected], rotation = placementRotation }
+  else
+    denyCellAction(x, y)
+  end
   end
 end
 
+function releaseBoardDrag(mx, my)
+  if not dragStart then return false end
+  local sx, sy = dragStart.x, dragStart.y
+  local x, y = cellAt(mx, my)
+  dragStart = nil
+  if not inBounds(x, y) then return true end
+  if sx == x and sy == y then leftClickBoard(x, y); return true end
+  local layer = editorMode and "editor" or "player"
+  if swapTiles(sx, sy, x, y, layer) then
+    if not editorMode then replayEvents[#replayEvents + 1] = { t = simTime, action = "swap", ax = sx, ay = sy, bx = x, by = y } end
+  else
+    denyCellAction(sx, sy)
+    denyCellAction(x, y)
+  end
+  return true
+end
+
 function love.mousepressed(mx, my, button)
+  local tab = topTabHit(mx, my)
+  if tab and button == 1 then topTab = tab; return end
+  if editorSizing then return end
   local hit = panelHit(mx, my)
   if hit and button == 1 then
-    selected = hit
+    if editorMode then editorSelected = hit else selected = hit end
     return
   end
   local x, y = cellAt(mx, my)
   if not inBounds(x, y) then return end
   if button == 1 then
-    if cellHasCargo(x, y) then return end
-    if setTile(x, y, names[selected], placementRotation) then
-      replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = names[selected], rotation = placementRotation }
-    end
-  elseif button == 2 and board[y][x].kind == "tile" then
-    if cellHasCargo(x, y) then return end
-    board[y][x] = { kind = "empty" }
-    dirty = true
-    replayEvents[#replayEvents + 1] = { t = simTime, action = "remove", x = x, y = y }
+    dragStart = { x = x, y = y }
+    return
+  end
+  if editorMode and button == 2 then
+    if cellHasCargo(x, y) then denyCellAction(x, y); return end
+    clearCellAt(x, y)
+    editorMessage = "Cleared " .. x .. "," .. y
+  elseif button == 2 then
+    if cellHasCargo(x, y) or not canModifyCell(board[y][x], "player") then denyCellAction(x, y); return end
+    if board[y][x].kind ~= "tile" then return end
+    if removeTileAt(x, y) then replayEvents[#replayEvents + 1] = { t = simTime, action = "remove", x = x, y = y } end
   end
 end
 
+function love.mousereleased(mx, my, button)
+  if button == 1 then releaseBoardDrag(mx, my) end
+end
+
 function love.keypressed(k)
-  if k >= "1" and k <= "5" then selected = tonumber(k) end
+  local numberKey = tonumber(k)
+  if editorSizing then
+    if numberKey and createEditorStage(numberKey) then return end
+    if k == "escape" or k == "g" then editorMode, editorSizing = false, false; editorMessage = "Editor setup canceled"; return end
+    return
+  end
+  if numberKey == 0 and editorMode then numberKey = 10 end
+  if numberKey then
+    if editorMode and numberKey >= 1 and numberKey <= #editorNames then editorSelected = numberKey
+    elseif not editorMode and numberKey >= 1 and numberKey <= #names then selected = numberKey end
+  end
+  if k == "t" and editHoveredResource("type") then return end
+  if (k == "=" or k == "+" or k == "kp+") and editHoveredResource("inc") then return end
+  if (k == "-" or k == "kp-") and editHoveredResource("dec") then return end
+  if k == "q" and editHoveredResource("infinite") then return end
+  if not editorMode and k == "q" then cycleConsumable(-1); return end
+  if not editorMode and k == "e" then cycleConsumable(1); return end
   if k == "space" then paused = not paused end
   if k == "`" or k == "grave" then debug = not debug end
   if k == "c" then showDump("Nitori Debug State", exportDebugState()) end
   if k == "v" then showDump("Nitori Replay Dump", replayDumpText()) end
+  if k == "g" then
+    if editorMode then
+      editorMode, editorSizing = false, false
+      editorMessage = "Editor mode off"
+    else
+      startEditorSizing()
+    end
+  end
+  if k == "x" then showDump("Nitori Stage Export", stageDumpText()); editorMessage = "Stage exported" end
+  if k == "i" then importStageFromClipboard() end
+  if k == "o" and editorMode then
+    editorSelected = editorSelected == 10 and 11 or 10
+    editorMessage = "Editor brush: " .. editorNames[editorSelected]
+  end
+  if k == "l" and editorMode then
+    local x, y = cellAt(love.mouse.getPosition())
+    if inBounds(x, y) and (board[y][x].kind == "tile" or board[y][x].kind == "obstacle") then
+      board[y][x].immutable = not board[y][x].immutable
+      editorMessage = "Lock " .. x .. "," .. y .. ": " .. tostring(board[y][x].immutable)
+    end
+  end
   if k == "b" then startDisturbance() end
+  if k == "n" then randomizeRuleInversions(); return end
   if k == "u" then
     unlimitedStock = not unlimitedStock
     replayEvents[#replayEvents + 1] = { t = simTime, action = "unlimited_stock", enabled = unlimitedStock }
   end
   if k == "f" then dirty = true end
-  if k == "tab" then loadScenario(scenario % 3 + 1) end
+  if k == "tab" then loadScenario(scenario % scenarios.count + 1) end
   if k == "r" then
     local x, y = cellAt(love.mouse.getPosition())
-    if inBounds(x, y) and board[y][x].kind == "tile" then
+    if editorMode and inBounds(x, y) and board[y][x].kind == "source" then
+      local cell = board[y][x]
+      cell.rotation = (cell.rotation + 1) % 4
+      cell.output = rotationLabel(cell.rotation)
+      for _, s in ipairs(sources) do if s.x == x and s.y == y then s.rotation, s.output = cell.rotation, cell.output end end
+      dirty = true
+    elseif editorMode and inBounds(x, y) and board[y][x].kind == "dest" then
+      local cell = board[y][x]
+      cell.rotation = (cell.rotation + 1) % 4
+      cell.inputs = { rotationLabel(cell.rotation) }
+      for _, d in ipairs(dests) do if d.x == x and d.y == y then d.rotation, d.inputs = cell.rotation, cell.inputs end end
+      dirty = true
+    elseif editorMode and inBounds(x, y) and board[y][x].kind == "tile" then
+      rotateCargoInCell(x, y)
+      rotateTile(board[y][x])
+      placementRotation = board[y][x].rotation
+      dirty = true
+      recalcFlow()
+      remapCargoInCell(x, y)
+    elseif inBounds(x, y) and not canModifyCell(board[y][x], "player") then
+      denyCellAction(x, y)
+    elseif inBounds(x, y) and board[y][x].kind == "tile" then
       rotateCargoInCell(x, y)
       rotateTile(board[y][x])
       placementRotation = board[y][x].rotation
