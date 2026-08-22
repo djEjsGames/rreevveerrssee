@@ -1792,10 +1792,12 @@ function love.load()
     portraits.sagume = love.graphics.newImage("assets/Images/Sagume.png")
   end
   if love.audio and love.audio.newSource then
-    bgm = love.audio.newSource("assets/audio/自宅にて.mp3", "stream")
-    bgm:setLooping(true)
-    bgm:setVolume(0.45)
-    bgm:play()
+    pcall(function()
+      bgm = love.audio.newSource("assets/audio/bgm.mp3", "stream")
+      bgm:setLooping(true)
+      bgm:setVolume(0.45)
+      bgm:play()
+    end)
   end
   selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
   loadScenario(1)

@@ -11,7 +11,7 @@ if (Test-Path -LiteralPath $webPlay) {
 Remove-Item -LiteralPath $webPlay -Recurse -Force
 }
 
-npx -y -p love.js love.js.cmd (Join-Path $root "dist\nitori-factory-prototype.love") $webPlay -c -t nitori-factory-prototype
+npx -y -p love.js love.js.cmd (Join-Path $root "dist\nitori-factory-prototype.love") $webPlay -c -t nitori-factory-prototype -m 67108864
 
 if (Test-Path -LiteralPath $pages) {
 Remove-Item -LiteralPath $pages -Recurse -Force
@@ -145,4 +145,3 @@ Set-Content -LiteralPath $index -Value $html -NoNewline
 
 Set-Content -LiteralPath (Join-Path $pages ".nojekyll") -Value ""
 Write-Output "Created GitHub Pages build in $pages"
-

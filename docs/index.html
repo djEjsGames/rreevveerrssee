@@ -61,7 +61,7 @@
 
       var Module = {
         arguments: ["./game.love"],
-        INITIAL_MEMORY: 16777216,
+        INITIAL_MEMORY: 67108864,
         printErr: console.error.bind(console),
         canvas: (function() {
           var canvas = document.getElementById('canvas');
@@ -110,7 +110,7 @@
   <script>
 (function () {
   const originalOpen = window.open.bind(window);
-  const BUILD_VERSION = "6a2b3bc / 2026-08-23 03:09:54 +09:00";
+  const BUILD_VERSION = "6da87c5 / 2026-08-23 03:15:45 +09:00";
 
   function stopGameInput(el) {
     ["keydown", "keyup", "keypress", "mousedown", "mouseup", "mousemove", "wheel", "touchstart", "touchmove"].forEach((name) => {
