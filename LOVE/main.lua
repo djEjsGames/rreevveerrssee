@@ -996,7 +996,7 @@ function randomizeRuleInversions()
   ruleInversions.swapSplitMerge = false
   splitState = {}
   dirty = true
-  characterCue = { id = "sagume", text = "매일 오늘같이 순탄하게 흘러가는 하루였으면 좋겠네.", time = 0, duration = 3.4 }
+  characterCue = { id = "sagume", text = "매일 오늘같이 순탄하게 흘러가는 하루였으면 좋겠네.", nitoriText = "아잇 싯팔 왜 뒤집어지는데", time = 0, duration = 3.4 }
 end
 
 function ruleInversionText()
@@ -1095,6 +1095,17 @@ function drawSagumeLine(x, y, alpha)
   love.graphics.print(" 하루였으면 좋겠네.", x + 214, y)
 end
 
+function drawNitoriCue(text, alpha, t)
+  local _, panelY = placementPanelRect()
+  local x, y, w, h = 92, panelY - 168 - 10 * (1 - t), 286, 48
+  love.graphics.setColor(0, 0, 0, 0.74 * alpha)
+  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+  love.graphics.setColor(0.36, 0.82, 0.95, alpha)
+  love.graphics.rectangle("line", x, y, w, h, 6, 6)
+  love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+  love.graphics.print(text, x + 14, y + 16)
+end
+
 function drawCharacterCue()
   if not characterCue then return end
   local t = math.min(1, characterCue.time / 0.28)
@@ -1119,6 +1130,7 @@ function drawCharacterCue()
     love.graphics.rectangle("line", x - 410, y + 8, 400, 66, 6, 6)
     drawSagumeLine(x - 396, y + 32, alpha)
   end
+  if characterCue.nitoriText then drawNitoriCue(characterCue.nitoriText, alpha, t) end
 end
 
 local function drawProgressPanel()
@@ -1463,7 +1475,7 @@ local function startDisturbance()
   if not x then return end
   local effect = disturbanceEffects[math.random(1, #disturbanceEffects)]
   pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = config.disturbanceDelay, phase = "alert" }
-  characterCue = { id = "seija", text = ({ "정말 망가트리기 좋게 생긴 공장이네", "내가 더 재밌게 해줄게" })[math.random(1, 2)], time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
+  characterCue = { id = "seija", text = ({ "정말 망가트리기 좋게 생긴 공장이네", "내가 더 재밌게 해줄게" })[math.random(1, 2)], nitoriText = "세이자년 다음에 잡으면 죽인다", time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
   replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = effect.id }
 end
 
