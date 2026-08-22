@@ -38,8 +38,16 @@ function M.exitsFor(tile, entry, schemaPairComplete, rules)
     if entry == "W" then return { "E" } end
     if entry == "E" then return { "W" } end
   elseif tile.type == "schema_in" then
+    if rules and rules.reverseFlow then
+      if entry == "C" then return { dirs[r + 1] } end
+      return {}
+    end
     if entry == dirs[r + 1] and schemaPairComplete(tile.pair) then return { "C" } end
   elseif tile.type == "schema_out" then
+    if rules and rules.reverseFlow then
+      if entry == dirs[r + 1] and schemaPairComplete(tile.pair) then return { "C" } end
+      return {}
+    end
     if entry == "C" then return { dirs[r + 1] } end
   elseif tile.type == "backdoor" then
     if entry ~= "C" then return { "C" } end
@@ -64,9 +72,9 @@ function M.segments(tile, rules)
   elseif tile.type == "bridge" then
     return { { "N", "S" }, { "W", "E" } }
   elseif tile.type == "schema" or tile.type == "schema_in" then
-    return { { dirs[r + 1], "C" } }
+    return rules and rules.reverseFlow and { { "C", dirs[r + 1] } } or { { dirs[r + 1], "C" } }
   elseif tile.type == "schema_out" then
-    return { { "C", dirs[r + 1] } }
+    return rules and rules.reverseFlow and { { dirs[r + 1], "C" } } or { { "C", dirs[r + 1] } }
   elseif tile.type == "backdoor" then
     return { { "N", "C" }, { "E", "C" }, { "S", "C" }, { "W", "C" } }
   end
@@ -86,9 +94,9 @@ function M.ports(tile, rules)
     if rules and rules.swapSplitMerge then return { output }, inputs end
     return inputs, { output }
   elseif tile.type == "schema" or tile.type == "schema_in" then
-    return { dirs[r + 1] }, { "C" }
+    return rules and rules.reverseFlow and { "C" } or { dirs[r + 1] }, rules and rules.reverseFlow and { dirs[r + 1] } or { "C" }
   elseif tile.type == "schema_out" then
-    return { "C" }, { dirs[r + 1] }
+    return rules and rules.reverseFlow and { dirs[r + 1] } or { "C" }, rules and rules.reverseFlow and { "C" } or { dirs[r + 1] }
   elseif tile.type == "backdoor" then
     return dirs, { "C" }
   end
@@ -101,8 +109,8 @@ function M.baseSegments(typeName, rules)
   if typeName == "splitter" then return rules and rules.swapSplitMerge and { { "E", "N" }, { "S", "N" }, { "W", "N" } } or { { "N", "E" }, { "N", "S" }, { "N", "W" } } end
   if typeName == "merger" then return rules and rules.swapSplitMerge and { { "N", "E" }, { "N", "S" }, { "N", "W" } } or { { "E", "N" }, { "S", "N" }, { "W", "N" } } end
   if typeName == "bridge" then return { { "N", "S" }, { "W", "E" } } end
-  if typeName == "schema" or typeName == "schema_in" then return { { "N", "C" } } end
-  if typeName == "schema_out" then return { { "C", "N" } } end
+  if typeName == "schema" or typeName == "schema_in" then return rules and rules.reverseFlow and { { "C", "N" } } or { { "N", "C" } } end
+  if typeName == "schema_out" then return rules and rules.reverseFlow and { { "N", "C" } } or { { "C", "N" } } end
   if typeName == "backdoor" then return { { "N", "C" }, { "E", "C" }, { "S", "C" }, { "W", "C" } } end
   return {}
 end
@@ -110,8 +118,8 @@ end
 function M.basePorts(typeName, rules)
   if typeName == "splitter" then return rules and rules.swapSplitMerge and { "E", "S", "W" } or { "N" }, rules and rules.swapSplitMerge and { "N" } or { "E", "S", "W" } end
   if typeName == "merger" then return rules and rules.swapSplitMerge and { "N" } or { "E", "S", "W" }, rules and rules.swapSplitMerge and { "E", "S", "W" } or { "N" } end
-  if typeName == "schema" or typeName == "schema_in" then return { "N" }, { "C" } end
-  if typeName == "schema_out" then return { "C" }, { "N" } end
+  if typeName == "schema" or typeName == "schema_in" then return rules and rules.reverseFlow and { "C" } or { "N" }, rules and rules.reverseFlow and { "N" } or { "C" } end
+  if typeName == "schema_out" then return rules and rules.reverseFlow and { "N" } or { "C" }, rules and rules.reverseFlow and { "C" } or { "N" } end
   if typeName == "backdoor" then return dirs, { "C" } end
   return {}, {}
 end

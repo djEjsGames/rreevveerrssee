@@ -59,8 +59,10 @@ function M.recalc(api)
               flows.sourceLanes[f.source] = flows.sourceLanes[f.source] or {}
               table.insert(flows.sourceLanes[f.source], lk)
             end
-            if not lane.blocked and cell.type == "schema_in" and exit == "C" then
-              local ox, oy = api.findSchemaPart(cell.pair, "out")
+            local teleports = not lane.blocked and exit == "C" and (cell.type == "schema_in" or cell.type == "schema_out")
+            if teleports then
+              local target = api.rules and api.rules.reverseFlow and "in" or "out"
+              local ox, oy = api.findSchemaPart(cell.pair, target)
               if ox then queue[#queue + 1] = { x = ox, y = oy, entry = "C", source = f.source, strength = f.strength, dist = f.dist + 1 } end
             elseif not lane.blocked then
               queue[#queue + 1] = { x = f.x + api.dx[exit], y = f.y + api.dy[exit], entry = api.opposite[exit], source = f.source, strength = f.strength, dist = f.dist + 1 }
@@ -75,8 +77,9 @@ end
 
 function M.laneAfter(api, lane)
   if lane.type == "backdoor" and lane.exit == "C" then return nil, "stock" end
-  if lane.type == "schema_in" and lane.exit == "C" then
-    local ox, oy, out = api.findSchemaPart(lane.pair, "out")
+  if (lane.type == "schema_in" or lane.type == "schema_out") and lane.exit == "C" then
+    local target = api.rules and api.rules.reverseFlow and "in" or "out"
+    local ox, oy, out = api.findSchemaPart(lane.pair, target)
     if not out then return nil, "blocked" end
     local outDir = api.dirs[(out.rotation % 4) + 1]
     local lk = api.laneKey(ox, oy, "C", outDir)

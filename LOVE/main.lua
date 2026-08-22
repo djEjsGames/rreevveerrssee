@@ -40,6 +40,8 @@ ruleInversions = { reverseFlow = false, swapSplitMerge = false }
 portraits = {}
 characterCue = nil
 bgm = nil
+local bgmIndex = 0
+local bgmTracks = { "assets/audio/bgm1.mp3", "assets/audio/bgm2.mp3" }
 local disturbanceEffects = config.disturbanceEffects
 local key, laneKey = common.key, common.laneKey
 local function inBounds(x, y) return common.inBounds(x, y, W, H) end
@@ -632,6 +634,12 @@ local function deliverToSource(sourceId, c)
     if s.id == sourceId then
       s.received = s.received or {}
       s.received[c.type] = (s.received[c.type] or 0) + 1
+      for _, d in ipairs(dests) do
+        if d.id == c.source and d.req[c.type] and (d.got[c.type] or 0) < d.req[c.type] then
+          d.got[c.type] = (d.got[c.type] or 0) + 1
+          break
+        end
+      end
       c.state = "removed"
       return
     end
@@ -1783,6 +1791,17 @@ local function showDump(title, text)
   if not opened and not copied then print(title .. "\n" .. text) end
 end
 
+local function playNextBgm()
+  if not (love.audio and love.audio.newSource) then return end
+  pcall(function()
+    bgmIndex = bgmIndex % #bgmTracks + 1
+    bgm = love.audio.newSource(bgmTracks[bgmIndex], "stream")
+    bgm:setLooping(false)
+    bgm:setVolume(0.45)
+    bgm:play()
+  end)
+end
+
 function love.load()
   math.randomseed(os.time())
   love.graphics.setFont(love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13))
@@ -1791,20 +1810,14 @@ function love.load()
     portraits.seija = love.graphics.newImage("assets/Images/Seija.png")
     portraits.sagume = love.graphics.newImage("assets/Images/Sagume.png")
   end
-  if love.audio and love.audio.newSource then
-    pcall(function()
-      bgm = love.audio.newSource("assets/audio/bgm.mp3", "stream")
-      bgm:setLooping(true)
-      bgm:setVolume(0.45)
-      bgm:play()
-    end)
-  end
+  playNextBgm()
   selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
   loadScenario(1)
 end
 
 function love.update(dt)
   simTime = simTime + dt
+  if bgm and not bgm:isPlaying() then playNextBgm() end
   updateDisturbance(dt)
   if dirty then
     recalcFlow()
