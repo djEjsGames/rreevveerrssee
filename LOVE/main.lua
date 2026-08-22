@@ -40,8 +40,13 @@ ruleInversions = { reverseFlow = false, swapSplitMerge = false }
 portraits = {}
 characterCue = nil
 bgm = nil
+uiFont, dialogFont = nil, nil
 local bgmIndex = 0
 local bgmTracks = { "assets/audio/bgm1.mp3", "assets/audio/bgm2.mp3" }
+disturbanceTimer = config.firstDisturbanceDelay
+disturbanceAutoEnabled = true
+rumiaOrb = nil
+rumiaTrail = {}
 local disturbanceEffects = config.disturbanceEffects
 local key, laneKey = common.key, common.laneKey
 local function inBounds(x, y) return common.inBounds(x, y, W, H) end
@@ -66,6 +71,7 @@ local function newBoard()
 end
 
 local function canModifyCell(cell, layer)
+  if cell.occupiedBy and layer ~= "editor" then return false end
   if layer == "disturbance" then return cell.kind ~= "source" and cell.kind ~= "dest" end
   if layer == "editor" then return true end
   return not cell.immutable
@@ -251,6 +257,7 @@ resetScenario = function(n, w, h, title)
   simTime = 0
   replayEvents = { { t = 0, action = "scenario", scenario = n } }
   nextCargoId, status, dirty = 1, "running", true
+  disturbanceTimer, rumiaOrb, rumiaTrail = config.firstDisturbanceDelay, nil, {}
   cameraX, cameraY, zoom = 0, 0, 1
   if fitBoardToView then fitBoardToView() end
 end
@@ -700,6 +707,9 @@ local function moveCargo(dt)
   sortCargo()
   for _, c in ipairs(cargo) do
     if c.state ~= "removed" then
+      if c.cellX and c.cellY and inBounds(c.cellX, c.cellY) and board[c.cellY][c.cellX].occupiedBy == "yuyuko" then
+        c.state = "removed"
+      else
       local lane = flows.lanes[c.lane]
       if not lane or lane.blocked then
         c.state = "waiting"
@@ -735,6 +745,7 @@ local function moveCargo(dt)
             c.localX, c.localY = cargoLocal(c)
           end
         end
+      end
       end
     end
   end
@@ -809,7 +820,7 @@ fitBoardToView = function()
   local viewW = math.max(CELL, screenW - left - rightPanelW)
   local viewH = math.max(CELL, screenH - top - bottomPanelH)
   local boardW, boardH = W * CELL, H * CELL
-  zoom = math.min(2.5, math.max(1, math.min(viewW / boardW, viewH / boardH)))
+  zoom = math.min(2.5, math.max(0.45, math.min(viewW / boardW, viewH / boardH)))
   cameraX = left + (viewW - boardW * zoom) * 0.5 - OX * zoom
   cameraY = top + (viewH - boardH * zoom) * 0.5 - OY * zoom
 end
@@ -876,7 +887,7 @@ local function drawTopPanel()
       line2 = "G: start editor setup"
     end
   elseif topTab == "debug" then
-    line1 = "Debug: " .. (debug and "flow overlay on" or "flow overlay off") .. "   Disturbance: B   Recalc flow: F   Rule invert: N"
+    line1 = "Debug: " .. (debug and "flow overlay on" or "flow overlay off") .. "   Disturbance: B   Auto: M " .. (disturbanceAutoEnabled and "on" or "off") .. "   Recalc flow: F   Rule invert: N"
     line2 = "`: debug overlay   C: debug dump   V: replay dump   " .. ruleInversionText()
   else
     line1 = "Stage: " .. scenario .. "/" .. scenarios.count .. " " .. scenarioTitle .. "   Board: " .. W .. "x" .. H .. "   Zoom: " .. string.format("%.2f", zoom)
@@ -1087,27 +1098,46 @@ function drawPlayerPortrait()
 end
 
 function drawSagumeLine(x, y, alpha)
+  local a, b, c = "매일 오늘같이 ", "순탄하게 흘러가는", " 하루였으면 좋겠네."
+  local font = love.graphics.getFont()
   love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
-  love.graphics.print("매일 오늘같이 ", x, y)
+  love.graphics.print(a, x, y)
   love.graphics.setColor(1, 0, 0, alpha)
-  love.graphics.print("순탄하게 흘러가는", x + 96, y)
+  love.graphics.print(b, x + font:getWidth(a), y)
   love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
-  love.graphics.print(" 하루였으면 좋겠네.", x + 214, y)
+  love.graphics.print(c, x + font:getWidth(a .. b), y)
 end
 
 function drawNitoriCue(text, alpha, t)
   local _, panelY = placementPanelRect()
-  local x, y, w, h = 92, panelY - 168 - 10 * (1 - t), 286, 48
+  local x, y, w, h = 92, panelY - 184 - 10 * (1 - t), 300, 64
   love.graphics.setColor(0, 0, 0, 0.74 * alpha)
   love.graphics.rectangle("fill", x, y, w, h, 6, 6)
   love.graphics.setColor(0.36, 0.82, 0.95, alpha)
   love.graphics.rectangle("line", x, y, w, h, 6, 6)
   love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
-  love.graphics.print(text, x + 14, y + 16)
+  love.graphics.printf(text, x + 14, y + 13, w - 28, "left")
+end
+
+function drawNitoriIconCue(img, alpha, t)
+  local _, panelY = placementPanelRect()
+  local x, y, w, h = 92, panelY - 204 - 10 * (1 - t), 128, 108
+  love.graphics.setColor(0, 0, 0, 0.74 * alpha)
+  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+  love.graphics.setColor(0.36, 0.82, 0.95, alpha)
+  love.graphics.rectangle("line", x, y, w, h, 6, 6)
+  if img then
+    local size = 80
+    local scale = size / math.max(img:getWidth(), img:getHeight())
+    love.graphics.setColor(1, 1, 1, alpha)
+    love.graphics.draw(img, x + (w - img:getWidth() * scale) * 0.5, y + (h - img:getHeight() * scale) * 0.5, 0, scale, scale)
+  end
 end
 
 function drawCharacterCue()
   if not characterCue then return end
+  local oldFont = love.graphics.getFont()
+  if dialogFont then love.graphics.setFont(dialogFont) end
   local t = math.min(1, characterCue.time / 0.28)
   local out = math.min(1, (characterCue.duration - characterCue.time) / 0.35)
   local alpha = easeOutQuint(math.min(t, out))
@@ -1115,11 +1145,11 @@ function drawCharacterCue()
     local x, y = 24, 112 - 18 * (1 - t)
     drawImageBox(portraits.seija, x, y, 82, alpha)
     love.graphics.setColor(0, 0, 0, 0.78 * alpha)
-    love.graphics.rectangle("fill", x + 92, y + 10, 360, 54, 6, 6)
+    love.graphics.rectangle("fill", x + 92, y + 10, 380, 68, 6, 6)
     love.graphics.setColor(1, 0.25, 0.2, alpha)
-    love.graphics.rectangle("line", x + 92, y + 10, 360, 54, 6, 6)
+    love.graphics.rectangle("line", x + 92, y + 10, 380, 68, 6, 6)
     love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
-    love.graphics.print(characterCue.text, x + 110, y + 28)
+    love.graphics.printf(characterCue.text, x + 110, y + 26, 344, "left")
   elseif characterCue.id == "sagume" then
     local screenW = screenSize()
     local x, y = screenW - 438, 156 - 14 * (1 - t)
@@ -1129,8 +1159,28 @@ function drawCharacterCue()
     love.graphics.setColor(0.72, 0.55, 0.9, alpha)
     love.graphics.rectangle("line", x - 410, y + 8, 400, 66, 6, 6)
     drawSagumeLine(x - 396, y + 32, alpha)
+  elseif characterCue.id == "yuyuko" then
+    local x, y = 24, 112 - 18 * (1 - t)
+    drawImageBox(portraits.yuyuko, x, y, 82, alpha)
+    love.graphics.setColor(0, 0, 0, 0.78 * alpha)
+    love.graphics.rectangle("fill", x + 92, y + 10, 320, 68, 6, 6)
+    love.graphics.setColor(1, 0.38, 0.5, alpha)
+    love.graphics.rectangle("line", x + 92, y + 10, 320, 68, 6, 6)
+    love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+    love.graphics.printf(characterCue.text, x + 110, y + 26, 284, "left")
+  elseif characterCue.id == "rumia" then
+    local x, y = 24, 112 - 18 * (1 - t)
+    drawImageBox(portraits.rumia, x, y, 82, alpha)
+    love.graphics.setColor(0, 0, 0, 0.78 * alpha)
+    love.graphics.rectangle("fill", x + 92, y + 10, 270, 68, 6, 6)
+    love.graphics.setColor(0.38, 0.22, 0.52, alpha)
+    love.graphics.rectangle("line", x + 92, y + 10, 270, 68, 6, 6)
+    love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
+    love.graphics.printf(characterCue.text, x + 110, y + 26, 234, "left")
   end
   if characterCue.nitoriText then drawNitoriCue(characterCue.nitoriText, alpha, t) end
+  if characterCue.nitoriIcon then drawNitoriIconCue(characterCue.nitoriIcon, alpha, t) end
+  if oldFont then love.graphics.setFont(oldFont) end
 end
 
 local function drawProgressPanel()
@@ -1377,6 +1427,93 @@ local function drawObstacle(_, _, cell, bx, by)
   end
 end
 
+function drawOccupation(cell, bx, by)
+  if cell.occupiedBy ~= "yuyuko" then return end
+  love.graphics.setColor(0.28, 0.04, 0.08, 0.42)
+  love.graphics.rectangle("fill", bx + 3, by + 3, CELL - 7, CELL - 7, 5, 5)
+  drawImageBox(portraits.yuyuko, bx + 7, by + 7, CELL - 15, 0.92)
+end
+
+function rumiaOutsidePoint()
+  local side = math.random(1, 4)
+  if side == 1 then return math.random() * W + 0.5, -4 end
+  if side == 2 then return W + 5, math.random() * H + 0.5 end
+  if side == 3 then return math.random() * W + 0.5, H + 5 end
+  return -4, math.random() * H + 0.5
+end
+
+function startRumiaDisturbance()
+  disturbanceTimer = config.disturbanceInterval
+  local x, y = rumiaOutsidePoint()
+  local tx, ty = math.random() * W + 0.5, math.random() * H + 0.5
+  rumiaOrb = { x = x, y = y, angle = math.atan2(ty - y, tx - x), time = 0, turn = 0, particleTimer = 0, phase = "enter" }
+  rumiaTrail = {}
+  characterCue = { id = "rumia", text = "그-런건-가~", nitoriIcon = portraits.blind, time = 0, duration = 3.4 }
+  replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", effect = "rumia" }
+end
+
+function updateRumia(dt)
+  if not rumiaOrb then return end
+  rumiaOrb.time = rumiaOrb.time + dt
+  local speed = rumiaOrb.phase == "wander" and 0.72 or 1.7
+  if rumiaOrb.phase == "enter" or rumiaOrb.phase == "exit" then
+    rumiaOrb.x = rumiaOrb.x + math.cos(rumiaOrb.angle) * speed * dt
+    rumiaOrb.y = rumiaOrb.y + math.sin(rumiaOrb.angle) * speed * dt
+    if rumiaOrb.phase == "enter" and rumiaOrb.x >= 1 and rumiaOrb.x <= W and rumiaOrb.y >= 1 and rumiaOrb.y <= H then
+      rumiaOrb.phase, rumiaOrb.time, rumiaOrb.turn = "wander", 0, 0
+    end
+  else
+    rumiaOrb.turn = rumiaOrb.turn - dt
+    if rumiaOrb.turn <= 0 then
+      rumiaOrb.angle = rumiaOrb.angle + (math.random() - 0.5) * 1.6
+      rumiaOrb.turn = 0.7 + math.random() * 0.8
+    end
+    rumiaOrb.x = rumiaOrb.x + math.cos(rumiaOrb.angle) * speed * dt
+    rumiaOrb.y = rumiaOrb.y + math.sin(rumiaOrb.angle) * speed * dt
+    if rumiaOrb.x < 1 or rumiaOrb.x > W then rumiaOrb.angle = math.pi - rumiaOrb.angle end
+    if rumiaOrb.y < 1 or rumiaOrb.y > H then rumiaOrb.angle = -rumiaOrb.angle end
+    rumiaOrb.x, rumiaOrb.y = math.max(1, math.min(W, rumiaOrb.x)), math.max(1, math.min(H, rumiaOrb.y))
+    if rumiaOrb.time >= config.rumiaDuration then
+      rumiaOrb.phase = "exit"
+      local cx, cy = W * 0.5, H * 0.5
+      rumiaOrb.angle = math.atan2(rumiaOrb.y - cy, rumiaOrb.x - cx)
+    end
+  end
+  rumiaOrb.particleTimer = rumiaOrb.particleTimer + dt
+  while rumiaOrb.particleTimer >= 0.1 do
+    rumiaOrb.particleTimer = rumiaOrb.particleTimer - 0.1
+    local a, r = math.random() * math.pi * 2, math.sqrt(math.random()) * 5
+    rumiaTrail[#rumiaTrail + 1] = { x = rumiaOrb.x + math.cos(a) * r, y = rumiaOrb.y + math.sin(a) * r, size = 1 + math.random() * 2, time = 0 }
+  end
+  for i = #rumiaTrail, 1, -1 do
+    rumiaTrail[i].time = rumiaTrail[i].time + dt
+    if rumiaTrail[i].time >= 1 then table.remove(rumiaTrail, i) end
+  end
+  if rumiaOrb.phase == "exit" and (rumiaOrb.x < -4 or rumiaOrb.x > W + 4 or rumiaOrb.y < -4 or rumiaOrb.y > H + 4) then rumiaOrb = nil end
+end
+
+function drawRumiaOrb()
+  if not rumiaOrb then return end
+  for _, p in ipairs(rumiaTrail) do
+    local a = 1 - p.time
+    local x, y = center(p.x, p.y)
+    for i = 8, 1, -1 do
+      local t = i / 8
+      local center = easeOutQuint(1 - t)
+      love.graphics.setColor(0.005, 0, 0.018, (0.02 + center * 0.13) * a)
+      love.graphics.circle("fill", x, y, CELL * p.size * t)
+    end
+  end
+  local x, y = center(rumiaOrb.x, rumiaOrb.y)
+  for i = 18, 1, -1 do
+    local t = i / 18
+    local center = easeOutQuint(1 - t)
+    love.graphics.setColor(0.005, 0, 0.018, 0.025 + center * 0.2)
+    love.graphics.circle("fill", x, y, CELL * 4 * t)
+  end
+  drawImageBox(portraits.rumia, x - 28, y - 28, 56, 0.88)
+end
+
 local function drawFlow()
   if not flows or not flows.lanes then return end
   for _, lane in pairs(flows.lanes) do
@@ -1460,8 +1597,8 @@ local function regionHasActiveLane(x, y, size)
   return false
 end
 
-local function randomDisturbanceRegion()
-  local size = math.random(2, 3)
+local function randomDisturbanceRegion(size)
+  size = size or math.random(2, 3)
   for _ = 1, 80 do
     local x, y = math.random(1, W - size + 1), math.random(1, H - size + 1)
     if regionHasActiveLane(x, y, size) then return x, y, size end
@@ -1469,17 +1606,71 @@ local function randomDisturbanceRegion()
   return nil
 end
 
+local function nearPort(x, y)
+  for _, s in ipairs(sources) do
+    if x == s.x + dx[s.output] and y == s.y + dy[s.output] then return true end
+  end
+  for _, d in ipairs(dests) do
+    for _, input in ipairs(d.inputs or dirs) do
+      if x == d.x + dx[input] and y == d.y + dy[input] then return true end
+    end
+  end
+  return false
+end
+
+local function randomYuyukoRegion()
+  for _ = 1, 80 do
+    local x, y = math.random(1, W), math.random(1, H)
+    if regionHasActiveLane(x, y, 1) and not nearPort(x, y) then return x, y, 1 end
+  end
+end
+
 local function startDisturbance()
   if dirty then recalcFlow() end
+  local pick = math.random(1, 3)
+  if pick == 1 then return startRumiaDisturbance() end
+  if pick == 2 then
+    local x, y, size = randomYuyukoRegion()
+    if not x then return end
+    disturbanceTimer = config.disturbanceInterval
+    pendingDisturbance = { x = x, y = y, size = size, effect = "occupy", label = "Yuyuko Occupy", timer = config.disturbanceDelay, phase = "alert" }
+    characterCue = { id = "yuyuko", text = "여기있네 빵 통조림~", nitoriText = "아아악!! 공습경보 공습경보!!", time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
+    replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = "occupy" }
+    return
+  end
   local x, y, size = randomDisturbanceRegion()
   if not x then return end
   local effect = disturbanceEffects[math.random(1, #disturbanceEffects)]
+  disturbanceTimer = config.disturbanceInterval
   pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = config.disturbanceDelay, phase = "alert" }
   characterCue = { id = "seija", text = ({ "정말 망가트리기 좋게 생긴 공장이네", "내가 더 재밌게 해줄게" })[math.random(1, 2)], nitoriText = "세이자년 다음에 잡으면 죽인다", time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
   replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = effect.id }
 end
 
+function removeCargoInRegion(d)
+  for _, c in ipairs(cargo) do
+    if c.state ~= "removed" then
+      local lane = flows.lanes[c.lane] or c.visualLane
+      local x, y = lane and lane.x or c.cellX, lane and lane.y or c.cellY
+      if x and y and x >= d.x and y >= d.y and x < d.x + d.size and y < d.y + d.size then c.state = "removed" end
+    end
+  end
+end
+
+function applyYuyukoDisturbance(d)
+  removeCargoInRegion(d)
+  for y = d.y, d.y + d.size - 1 do
+    for x = d.x, d.x + d.size - 1 do
+      if canModifyCell(board[y][x], "disturbance") then board[y][x].occupiedBy = "yuyuko" end
+    end
+  end
+  dirty = true
+  recalcFlow()
+  replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_apply", x = d.x, y = d.y, size = d.size, effect = d.effect }
+end
+
 local function applyDisturbance(d)
+  if d.effect == "occupy" then return applyYuyukoDisturbance(d) end
   for y = d.y, d.y + d.size - 1 do
     for x = d.x, d.x + d.size - 1 do
       if not canModifyCell(board[y][x], "disturbance") then return end
@@ -1531,6 +1722,7 @@ local function disturbanceLocksSimulation()
 end
 
 local function disturbanceGlyph(effect)
+  if effect == "occupy" then return "Y" end
   if effect == "rotate_cw" then return "+90" end
   if effect == "rotate_ccw" then return "-90" end
   if effect == "flip_h" then return "<>" end
@@ -1549,6 +1741,12 @@ end
 
 local function drawDisturbancePreviewQuad(d)
   if d.phase ~= "alert" then return end
+  if d.effect == "occupy" then
+    local cx = OX + (d.x + d.size * 0.5 - 1) * CELL
+    local cy = OY + (d.y - 1) * CELL - CELL * 0.96
+    drawImageBox(portraits.yuyuko, cx - 24, cy - 24, 48, 0.92)
+    return
+  end
   local t = easeOutQuint(simTime % 1)
   local cx = OX + (d.x + d.size * 0.5 - 1) * CELL
   local cy = OY + (d.y - 1) * CELL - CELL * 0.62
@@ -1756,7 +1954,11 @@ local function replayDumpText()
     elseif e.action == "swap" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, ax = %d, ay = %d, bx = %d, by = %d },", e.t, q(e.action), e.ax, e.ay, e.bx, e.by)
     elseif e.action == "disturbance_alert" or e.action == "disturbance_apply" then
-      lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, size = %d, effect = %s },", e.t, q(e.action), e.x, e.y, e.size, q(e.effect))
+      if e.x then
+        lines[#lines + 1] = string.format("    { t = %.3f, action = %s, x = %d, y = %d, size = %d, effect = %s },", e.t, q(e.action), e.x, e.y, e.size, q(e.effect))
+      else
+        lines[#lines + 1] = string.format("    { t = %.3f, action = %s, effect = %s },", e.t, q(e.action), q(e.effect))
+      end
     elseif e.action == "unlimited_stock" then
       lines[#lines + 1] = string.format("    { t = %.3f, action = %s, enabled = %s },", e.t, q(e.action), tostring(e.enabled))
     end
@@ -1816,11 +2018,16 @@ end
 
 function love.load()
   math.randomseed(os.time())
-  love.graphics.setFont(love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13))
+  uiFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13)
+  dialogFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 16)
+  love.graphics.setFont(uiFont)
   if love.graphics.newImage then
     portraits.nitori = love.graphics.newImage("assets/Images/Nitori.png")
     portraits.seija = love.graphics.newImage("assets/Images/Seija.png")
     portraits.sagume = love.graphics.newImage("assets/Images/Sagume.png")
+    portraits.yuyuko = love.graphics.newImage("assets/Images/Yuyuko.png")
+    portraits.rumia = love.graphics.newImage("assets/Images/Rumia.png")
+    portraits.blind = love.graphics.newImage("assets/Images/Blind.png")
   end
   playNextBgm()
   selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
@@ -1831,6 +2038,7 @@ function love.update(dt)
   simTime = simTime + dt
   if bgm and not bgm:isPlaying() then playNextBgm() end
   updateDisturbance(dt)
+  updateRumia(dt)
   if dirty then
     recalcFlow()
   end
@@ -1845,6 +2053,10 @@ function love.update(dt)
   if love.keyboard.isDown("d") then cameraX = cameraX - move end
   if love.keyboard.isDown("w") then cameraY = cameraY + move end
   if love.keyboard.isDown("s") then cameraY = cameraY - move end
+  if not paused and status == "running" and disturbanceAutoEnabled then
+    disturbanceTimer = disturbanceTimer - dt
+    if disturbanceTimer <= 0 and not pendingDisturbance and not rumiaOrb then startDisturbance() end
+  end
   if not paused and not disturbanceLocksSimulation() then
     if status == "running" then spawn(dt) end
     moveCargo(dt)
@@ -1957,6 +2169,7 @@ function love.draw()
       elseif cell.kind == "dest" then
         drawDestCell(cell, bx, by)
       end
+      drawOccupation(cell, bx, by)
       drawEditorMarker(cell, bx, by)
       love.graphics.setColor(colors.grid)
       love.graphics.rectangle("line", bx, by, CELL, CELL)
@@ -1971,6 +2184,7 @@ function love.draw()
   drawDisturbanceAlertWorld()
   if debug then drawFlow() end
   drawCargo()
+  drawRumiaOrb()
   drawDeniedBorders()
   love.graphics.pop()
   drawDraggedTile()
@@ -2114,6 +2328,7 @@ function love.keypressed(k)
     end
   end
   if k == "b" then startDisturbance() end
+  if k == "m" then disturbanceAutoEnabled = not disturbanceAutoEnabled end
   if k == "n" then randomizeRuleInversions(); return end
   if k == "u" then
     unlimitedStock = not unlimitedStock

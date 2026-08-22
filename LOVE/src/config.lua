@@ -46,7 +46,10 @@ return {
   rotateTweenDuration = 0.1,
   cameraSpeed = 360,
   disturbanceDelay = 3,
+  firstDisturbanceDelay = 10,
+  disturbanceInterval = 60,
   disturbanceTweenDuration = 1,
+  rumiaDuration = 50,
   disturbanceEffects = {
     { id = "rotate_cw", label = "Rotate +90" },
     { id = "rotate_ccw", label = "Rotate -90" },
