@@ -592,6 +592,7 @@ end
 
 denyCellAction = function(x, y)
   deniedShakes[key(x, y)] = 0.18
+  playSfx("tileDeny", 0.75)
 end
 
 local function progressOnSegment(lx, ly, ax, ay, bx, by)
@@ -2181,6 +2182,7 @@ local function loadSfx()
     cargoReturn = "assets/audio/SE/Cargo_return.mp3",
     rumiaEncounter = "assets/audio/SE/Rumia_encounter.mp3",
     tileBatch = "assets/audio/SE/Tile_batch.mp3",
+    tileDeny = "assets/audio/SE/Tile_Deny.mp3",
     tileSpin = "assets/audio/SE/Tile_spin.mp3",
   }
   for id, path in pairs(files) do pcall(function() sfxSources[id] = love.audio.newSource(path, "static") end) end
