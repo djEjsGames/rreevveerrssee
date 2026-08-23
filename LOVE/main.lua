@@ -31,6 +31,7 @@ local replayEvents = {}
 local pendingDisturbance = nil
 local disturbanceTweenDuration = config.disturbanceTweenDuration
 local deniedShakes = {}
+recallCargo = {}
 dragStart = nil
 consumableOrder = { "none", "cirno_wing", "momoyo_pickaxe" }
 consumableCounts = { cirno_wing = 3, momoyo_pickaxe = 3 }
@@ -41,12 +42,14 @@ portraits = {}
 characterCue = nil
 bgm = nil
 uiFont, dialogFont = nil, nil
+sfxSources, activeSfx = {}, {}
 local bgmIndex = 0
 local bgmTracks = { "assets/audio/bgm1.mp3", "assets/audio/bgm2.mp3" }
 disturbanceTimer = config.firstDisturbanceDelay
 disturbanceAutoEnabled = true
 rumiaOrb = nil
 rumiaTrail = {}
+cooldownSliderDrag = false
 local disturbanceEffects = config.disturbanceEffects
 local key, laneKey = common.key, common.laneKey
 local function inBounds(x, y) return common.inBounds(x, y, W, H) end
@@ -86,6 +89,7 @@ end
 local function setTile(x, y, typeName, rot, layer)
   if not canModifyCell(board[y][x], layer or "player") then return false end
   if board[y][x].type == "schema_in" or board[y][x].type == "schema_out" then return false end
+  if recallCargoInCell then recallCargoInCell(x, y) end
   board[y][x] = { kind = "tile", type = typeName, rotation = rot or 0 }
   dirty = true
   return true
@@ -93,6 +97,7 @@ end
 
 local function setSchemaTile(x, y, part, pair, rot, layer)
   if not canModifyCell(board[y][x], layer or "player") then return false end
+  if recallCargoInCell then recallCargoInCell(x, y) end
   board[y][x] = { kind = "tile", type = part == "in" and "schema_in" or "schema_out", pair = pair, rotation = rot or 0 }
   dirty = true
   return true
@@ -120,12 +125,16 @@ local function removeTileAt(x, y)
     for yy = 1, H do
       for xx = 1, W do
         local other = board[yy][xx]
-        if other.kind == "tile" and other.pair == cell.pair then board[yy][xx] = { kind = "empty" } end
+        if other.kind == "tile" and other.pair == cell.pair then
+          if recallCargoInCell then recallCargoInCell(xx, yy) end
+          board[yy][xx] = { kind = "empty" }
+        end
       end
     end
     if pendingSchema and pendingSchema.pair == cell.pair then pendingSchema = nil end
     if complete then schemaStock = schemaStock + 1 end
   else
+    if recallCargoInCell then recallCargoInCell(x, y) end
     board[y][x] = { kind = "empty" }
   end
   dirty = true
@@ -147,7 +156,7 @@ function swapTiles(ax, ay, bx, by, layer)
   local a, b = board[ay][ax], board[by][bx]
   if not ((a.kind == "tile" or a.kind == "empty") and (b.kind == "tile" or b.kind == "empty")) then return false end
   if a.kind == "empty" and b.kind == "empty" then return false end
-  if cellHasCargo(ax, ay) or cellHasCargo(bx, by) then return false end
+  if recallCargoInCell then recallCargoInCell(ax, ay); recallCargoInCell(bx, by) end
   board[ay][ax], board[by][bx] = b, a
   dirty = true
   return true
@@ -406,6 +415,29 @@ local function updateCargoTweens(dt)
   end
 end
 
+function bezierPoint(a, b, c, d, t)
+  local u = 1 - t
+  return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d
+end
+
+function updateRecallCargo(dt)
+  for i = #recallCargo, 1, -1 do
+    local r = recallCargo[i]
+    r.time = r.time + dt
+    local t = math.min(1, r.time / r.duration)
+    if t >= 1 then table.remove(recallCargo, i) goto continue end
+    local q = t * t
+    r.x = bezierPoint(r.sx, r.c1x, r.c2x, r.tx, q)
+    r.y = bezierPoint(r.sy, r.c1y, r.c2y, r.ty, q)
+    r.trail[#r.trail + 1] = { x = r.x, y = r.y, time = 0, duration = 0.2 + math.random() * 0.1 }
+    for j = #r.trail, 1, -1 do
+      r.trail[j].time = r.trail[j].time + dt
+      if r.trail[j].time >= r.trail[j].duration then table.remove(r.trail, j) end
+    end
+    ::continue::
+  end
+end
+
 local function updateDeniedShakes(dt)
   for k, t in pairs(deniedShakes) do
     t = t - dt
@@ -486,17 +518,67 @@ local function cargoLocal(c)
   return laneLocalPoint(lane, c.progress)
 end
 
+function cargoWorldPoint(c)
+  local lane = flows.lanes[c.lane] or c.visualLane
+  if lane then return laneWorldPoint(lane, c.progress or 0) end
+  if c.visualPoint then
+    local cx, cy = center(c.visualPoint.x, c.visualPoint.y)
+    return cx + (c.visualPoint.lx or 0) * CELL, cy + (c.visualPoint.ly or 0) * CELL
+  end
+  local cx, cy = center(c.cellX or 1, c.cellY or 1)
+  return cx + (c.localX or 0) * CELL, cy + (c.localY or 0) * CELL
+end
+
+function sourcePortPoint(id)
+  for _, s in ipairs(sources) do
+    if s.id == id then
+      local x, y = portPoint(s.x, s.y, s.output)
+      return x, y, s
+    end
+  end
+end
+
+function stockBack(c)
+  local _, _, s = sourcePortPoint(c.source)
+  if s and not unlimitedStock and s.remaining ~= -1 then s.remaining = s.remaining + 1 end
+end
+
+function recallCargoInCell(x, y)
+  local played = false
+  for _, c in ipairs(cargo) do
+    if cargoInCell(c, x, y) then
+      local sx, sy = cargoWorldPoint(c)
+      local tx, ty = sourcePortPoint(c.source)
+      if tx and ty then
+        local a, speed = math.random() * math.pi * 2, 240 + math.random() * 260
+        local duration = 0.55 + math.random() * 0.3
+        recallCargo[#recallCargo + 1] = { type = c.type, x = sx, y = sy, sx = sx, sy = sy, c1x = sx + math.cos(a) * speed * 0.45, c1y = sy + math.sin(a) * speed * 0.45, c2x = tx + (math.random() - 0.5) * CELL * 3, c2y = ty + (math.random() - 0.5) * CELL * 3, tx = tx, ty = ty, time = 0, duration = duration, trail = {} }
+      end
+      if not played then playSfx("cargoReturn", 0.75); played = true end
+      stockBack(c)
+      c.state = "removed"
+    end
+  end
+end
+
 local function rememberCargoPoint(c, x, y, lx, ly)
   c.cellX, c.cellY, c.localX, c.localY = x, y, lx, ly
   c.visualLane = nil
   c.visualPoint = { x = x, y = y, lx = lx, ly = ly }
 end
 
-local function cargoInCell(c, x, y)
+function cargoInCell(c, x, y)
   if c.state == "removed" then return false end
   local lane = flows.lanes[c.lane] or c.visualLane
   if lane then return lane.x == x and lane.y == y end
   return c.cellX == x and c.cellY == y
+end
+
+function cargoInYuyukoCell(c)
+  if c.state == "removed" then return false end
+  local lane = flows.lanes[c.lane] or c.visualLane
+  local x, y = lane and lane.x or c.cellX, lane and lane.y or c.cellY
+  return x and y and board[y] and board[y][x] and board[y][x].occupiedBy == "yuyuko"
 end
 
 function cellHasCargo(x, y)
@@ -707,45 +789,47 @@ local function moveCargo(dt)
   sortCargo()
   for _, c in ipairs(cargo) do
     if c.state ~= "removed" then
-      if c.cellX and c.cellY and inBounds(c.cellX, c.cellY) and board[c.cellY][c.cellX].occupiedBy == "yuyuko" then
+      if cargoInYuyukoCell(c) then
         c.state = "removed"
       else
-      local lane = flows.lanes[c.lane]
-      if not lane or lane.blocked then
-        c.state = "waiting"
-      else
-        c.visualLane = laneSnapshot(lane)
-        c.visualPoint = nil
-        c.cellX, c.cellY = lane.x, lane.y
-        c.localX, c.localY = cargoLocal(c)
-        local target = math.min(1, c.progress + c.speed * dt)
-        if laneHasSpace(c.lane, target, c.id, c.progress) or target <= c.progress then
-          c.progress, c.state = target, "moving"
-          c.localX, c.localY = cargoLocal(c)
-        else
+        local lane = flows.lanes[c.lane]
+        if not lane or lane.blocked then
           c.state = "waiting"
-        end
-        if c.progress >= 1 then
-          local nextLane, why, destId, splitterKey = laneAfter(lane)
-          if why == "dest" then
-            deliver(destId, c)
-          elseif why == "source" then
-            deliverToSource(destId, c)
-          elseif why == "stock" then
-            returnToStock(c)
-          elseif nextLane and laneHasSpace(nextLane, 0) then
-            c.lane, c.progress, c.state = nextLane, 0, "moving"
-            c.visualLane = laneSnapshot(flows.lanes[nextLane])
-            c.visualPoint = nil
-            c.cellX, c.cellY = c.visualLane.x, c.visualLane.y
+        else
+          c.visualLane = laneSnapshot(lane)
+          c.visualPoint = nil
+          c.cellX, c.cellY = lane.x, lane.y
+          c.localX, c.localY = cargoLocal(c)
+          local target = math.min(1, c.progress + c.speed * dt)
+          if laneHasSpace(c.lane, target, c.id, c.progress) or target <= c.progress then
+            c.progress, c.state = target, "moving"
             c.localX, c.localY = cargoLocal(c)
-            if splitterKey then splitState[splitterKey] = (splitState[splitterKey] or 1) + 1 end
           else
-            c.progress, c.state = 1, "waiting"
-            c.localX, c.localY = cargoLocal(c)
+            c.state = "waiting"
+          end
+          if c.progress >= 1 then
+            local nextLane, why, destId, splitterKey = laneAfter(lane)
+            if why == "dest" then
+              deliver(destId, c)
+            elseif why == "source" then
+              deliverToSource(destId, c)
+            elseif why == "stock" then
+              returnToStock(c)
+            elseif why == "lost" then
+              c.state = "removed"
+            elseif nextLane and laneHasSpace(nextLane, 0) then
+              c.lane, c.progress, c.state = nextLane, 0, "moving"
+              c.visualLane = laneSnapshot(flows.lanes[nextLane])
+              c.visualPoint = nil
+              c.cellX, c.cellY = c.visualLane.x, c.visualLane.y
+              c.localX, c.localY = cargoLocal(c)
+              if splitterKey then splitState[splitterKey] = (splitState[splitterKey] or 1) + 1 end
+            else
+              c.progress, c.state = 1, "waiting"
+              c.localX, c.localY = cargoLocal(c)
+            end
           end
         end
-      end
       end
     end
   end
@@ -845,10 +929,57 @@ local function topTabHit(mx, my)
   return nil
 end
 
+function cooldownSliderRect()
+  return 24, 103, 260, 18
+end
+
+function setDisturbanceCooldown(seconds)
+  config.disturbanceInterval = math.floor(math.max(20, math.min(90, seconds)) + 0.5)
+  disturbanceTimer = math.min(disturbanceTimer, config.disturbanceInterval)
+  if rumiaOrb then rumiaOrb.wanderDuration = math.max(1, config.disturbanceInterval - 5) end
+end
+
+function setDisturbanceCooldownFromMouse(mx)
+  local x, _, w = cooldownSliderRect()
+  local t = math.max(0, math.min(1, (mx - x) / w))
+  setDisturbanceCooldown(20 + t * 70)
+end
+
+function cooldownSliderHit(mx, my)
+  if topTab ~= "debug" then return false end
+  local x, y, w, h = cooldownSliderRect()
+  return mx >= x and mx <= x + w and my >= y - 10 and my <= y + h + 10
+end
+
+function topPanelHeight()
+  return topTab == "debug" and 130 or 88
+end
+
+function characterCueTop(t)
+  return 10 + topPanelHeight() + 14 + 18 * (1 - t)
+end
+
+function drawCooldownSlider()
+  if topTab ~= "debug" then return end
+  local x, y, w, h = cooldownSliderRect()
+  local t = (config.disturbanceInterval - 20) / 70
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Cooldown: " .. config.disturbanceInterval .. "s", x, y - 18)
+  love.graphics.setColor(colors.grid)
+  love.graphics.rectangle("fill", x, y + h * 0.5 - 2, w, 4, 2, 2)
+  love.graphics.setColor(colors.selected)
+  love.graphics.rectangle("fill", x, y + h * 0.5 - 2, w * t, 4, 2, 2)
+  love.graphics.setColor(colors.hover)
+  love.graphics.circle("fill", x + w * t, y + h * 0.5, 8)
+  love.graphics.setColor(colors.text)
+  love.graphics.print("20", x, y + 14)
+  love.graphics.print("90", x + w - 16, y + 14)
+end
+
 local function drawTopPanel()
   local screenW = screenSize()
   love.graphics.setColor(colors.panel)
-  love.graphics.rectangle("fill", 14, 10, math.max(360, screenW - 28), 88, 5, 5)
+  love.graphics.rectangle("fill", 14, 10, math.max(360, screenW - 28), topPanelHeight(), 5, 5)
 
   local x = 24
   for _, tab in ipairs(config.topTabs) do
@@ -897,6 +1028,7 @@ local function drawTopPanel()
   love.graphics.setColor(colors.text)
   love.graphics.print(line1, 24, 50)
   love.graphics.print(editorMessage ~= "" and editorMessage or line2, 24, 74)
+  drawCooldownSlider()
 end
 
 local function drawTileIcon(tile, x, y, size)
@@ -1142,7 +1274,7 @@ function drawCharacterCue()
   local out = math.min(1, (characterCue.duration - characterCue.time) / 0.35)
   local alpha = easeOutQuint(math.min(t, out))
   if characterCue.id == "seija" then
-    local x, y = 24, 112 - 18 * (1 - t)
+    local x, y = 24, characterCueTop(t)
     drawImageBox(portraits.seija, x, y, 82, alpha)
     love.graphics.setColor(0, 0, 0, 0.78 * alpha)
     love.graphics.rectangle("fill", x + 92, y + 10, 380, 68, 6, 6)
@@ -1152,7 +1284,7 @@ function drawCharacterCue()
     love.graphics.printf(characterCue.text, x + 110, y + 26, 344, "left")
   elseif characterCue.id == "sagume" then
     local screenW = screenSize()
-    local x, y = screenW - 438, 156 - 14 * (1 - t)
+    local x, y = screenW - 438, characterCueTop(t) + 44
     drawImageBox(portraits.sagume, x, y, 74, alpha)
     love.graphics.setColor(0, 0, 0, 0.7 * alpha)
     love.graphics.rectangle("fill", x - 410, y + 8, 400, 66, 6, 6)
@@ -1160,7 +1292,7 @@ function drawCharacterCue()
     love.graphics.rectangle("line", x - 410, y + 8, 400, 66, 6, 6)
     drawSagumeLine(x - 396, y + 32, alpha)
   elseif characterCue.id == "yuyuko" then
-    local x, y = 24, 112 - 18 * (1 - t)
+    local x, y = 24, characterCueTop(t)
     drawImageBox(portraits.yuyuko, x, y, 82, alpha)
     love.graphics.setColor(0, 0, 0, 0.78 * alpha)
     love.graphics.rectangle("fill", x + 92, y + 10, 320, 68, 6, 6)
@@ -1169,7 +1301,7 @@ function drawCharacterCue()
     love.graphics.setColor(colors.text[1], colors.text[2], colors.text[3], alpha)
     love.graphics.printf(characterCue.text, x + 110, y + 26, 284, "left")
   elseif characterCue.id == "rumia" then
-    local x, y = 24, 112 - 18 * (1 - t)
+    local x, y = 24, characterCueTop(t)
     drawImageBox(portraits.rumia, x, y, 82, alpha)
     love.graphics.setColor(0, 0, 0, 0.78 * alpha)
     love.graphics.rectangle("fill", x + 92, y + 10, 270, 68, 6, 6)
@@ -1444,9 +1576,16 @@ end
 
 function startRumiaDisturbance()
   disturbanceTimer = config.disturbanceInterval
+  playSfx("rumiaEncounter", 0.85)
   local x, y = rumiaOutsidePoint()
   local tx, ty = math.random() * W + 0.5, math.random() * H + 0.5
-  rumiaOrb = { x = x, y = y, angle = math.atan2(ty - y, tx - x), time = 0, turn = 0, particleTimer = 0, phase = "enter" }
+  local ex, ey = rumiaOutsidePoint()
+  rumiaOrb = {
+    x = x, y = y, sx = x, sy = y, tx = tx, ty = ty, ex = ex, ey = ey,
+    angle = math.atan2(ty - y, tx - x), time = 0, turn = 0, particleTimer = 0,
+    phase = "enter", entryDuration = 2.5, exitDuration = 2.5,
+    wanderDuration = math.max(1, config.disturbanceInterval - 5)
+  }
   rumiaTrail = {}
   characterCue = { id = "rumia", text = "그-런건-가~", nitoriIcon = portraits.blind, time = 0, duration = 3.4 }
   replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", effect = "rumia" }
@@ -1455,14 +1594,18 @@ end
 function updateRumia(dt)
   if not rumiaOrb then return end
   rumiaOrb.time = rumiaOrb.time + dt
-  local speed = rumiaOrb.phase == "wander" and 0.72 or 1.7
-  if rumiaOrb.phase == "enter" or rumiaOrb.phase == "exit" then
-    rumiaOrb.x = rumiaOrb.x + math.cos(rumiaOrb.angle) * speed * dt
-    rumiaOrb.y = rumiaOrb.y + math.sin(rumiaOrb.angle) * speed * dt
-    if rumiaOrb.phase == "enter" and rumiaOrb.x >= 1 and rumiaOrb.x <= W and rumiaOrb.y >= 1 and rumiaOrb.y <= H then
-      rumiaOrb.phase, rumiaOrb.time, rumiaOrb.turn = "wander", 0, 0
-    end
+  if rumiaOrb.phase == "enter" then
+    local t = easeOutQuint(math.min(1, rumiaOrb.time / rumiaOrb.entryDuration))
+    rumiaOrb.x = rumiaOrb.sx + (rumiaOrb.tx - rumiaOrb.sx) * t
+    rumiaOrb.y = rumiaOrb.sy + (rumiaOrb.ty - rumiaOrb.sy) * t
+    if t >= 1 then rumiaOrb.phase, rumiaOrb.time, rumiaOrb.turn = "wander", 0, 0 end
+  elseif rumiaOrb.phase == "exit" then
+    local t = easeOutQuint(math.min(1, rumiaOrb.time / rumiaOrb.exitDuration))
+    rumiaOrb.x = rumiaOrb.sx + (rumiaOrb.tx - rumiaOrb.sx) * t
+    rumiaOrb.y = rumiaOrb.sy + (rumiaOrb.ty - rumiaOrb.sy) * t
+    if t >= 1 then rumiaOrb = nil; return end
   else
+    local speed = 0.72
     rumiaOrb.turn = rumiaOrb.turn - dt
     if rumiaOrb.turn <= 0 then
       rumiaOrb.angle = rumiaOrb.angle + (math.random() - 0.5) * 1.6
@@ -1473,10 +1616,9 @@ function updateRumia(dt)
     if rumiaOrb.x < 1 or rumiaOrb.x > W then rumiaOrb.angle = math.pi - rumiaOrb.angle end
     if rumiaOrb.y < 1 or rumiaOrb.y > H then rumiaOrb.angle = -rumiaOrb.angle end
     rumiaOrb.x, rumiaOrb.y = math.max(1, math.min(W, rumiaOrb.x)), math.max(1, math.min(H, rumiaOrb.y))
-    if rumiaOrb.time >= config.rumiaDuration then
-      rumiaOrb.phase = "exit"
-      local cx, cy = W * 0.5, H * 0.5
-      rumiaOrb.angle = math.atan2(rumiaOrb.y - cy, rumiaOrb.x - cx)
+    if rumiaOrb.time >= rumiaOrb.wanderDuration then
+      rumiaOrb.phase, rumiaOrb.time = "exit", 0
+      rumiaOrb.sx, rumiaOrb.sy, rumiaOrb.tx, rumiaOrb.ty = rumiaOrb.x, rumiaOrb.y, rumiaOrb.ex, rumiaOrb.ey
     end
   end
   rumiaOrb.particleTimer = rumiaOrb.particleTimer + dt
@@ -1489,7 +1631,6 @@ function updateRumia(dt)
     rumiaTrail[i].time = rumiaTrail[i].time + dt
     if rumiaTrail[i].time >= 1 then table.remove(rumiaTrail, i) end
   end
-  if rumiaOrb.phase == "exit" and (rumiaOrb.x < -4 or rumiaOrb.x > W + 4 or rumiaOrb.y < -4 or rumiaOrb.y > H + 4) then rumiaOrb = nil end
 end
 
 function drawRumiaOrb()
@@ -1583,6 +1724,19 @@ local function drawCargo()
   end
 end
 
+function drawRecallCargo()
+  for _, r in ipairs(recallCargo) do
+    for _, p in ipairs(r.trail) do
+      local a = 1 - p.time / p.duration
+      love.graphics.setColor(colors.cargo[1], colors.cargo[2], colors.cargo[3], 0.28 * a)
+      love.graphics.circle("fill", p.x, p.y, 6 * a)
+    end
+    local a = math.max(0, 1 - r.time / r.duration)
+    love.graphics.setColor(colors.cargo[1], colors.cargo[2], colors.cargo[3], 0.45 + 0.55 * a)
+    love.graphics.circle("fill", r.x, r.y, 8)
+  end
+end
+
 local function regionHasActiveLane(x, y, size)
   for yy = y, y + size - 1 do
     for xx = x, x + size - 1 do
@@ -1633,6 +1787,7 @@ local function startDisturbance()
     local x, y, size = randomYuyukoRegion()
     if not x then return end
     disturbanceTimer = config.disturbanceInterval
+    playSfx("alert", 0.85, 0.45)
     pendingDisturbance = { x = x, y = y, size = size, effect = "occupy", label = "Yuyuko Occupy", timer = config.disturbanceDelay, phase = "alert" }
     characterCue = { id = "yuyuko", text = "여기있네 빵 통조림~", nitoriText = "아아악!! 공습경보 공습경보!!", time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
     replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = "occupy" }
@@ -1642,6 +1797,7 @@ local function startDisturbance()
   if not x then return end
   local effect = disturbanceEffects[math.random(1, #disturbanceEffects)]
   disturbanceTimer = config.disturbanceInterval
+  playSfx("alert", 0.85, 0.45)
   pendingDisturbance = { x = x, y = y, size = size, effect = effect.id, label = effect.label, timer = config.disturbanceDelay, phase = "alert" }
   characterCue = { id = "seija", text = ({ "정말 망가트리기 좋게 생긴 공장이네", "내가 더 재밌게 해줄게" })[math.random(1, 2)], nitoriText = "세이자년 다음에 잡으면 죽인다", time = 0, duration = config.disturbanceDelay + disturbanceTweenDuration }
   replayEvents[#replayEvents + 1] = { t = simTime, action = "disturbance_alert", x = x, y = y, size = size, effect = effect.id }
@@ -2016,6 +2172,46 @@ local function playNextBgm()
   end)
 end
 
+local function loadSfx()
+  if not (love.audio and love.audio.newSource) then return end
+  local files = {
+    alert = "assets/audio/SE/Alert.mp3",
+    cargoReturn = "assets/audio/SE/Cargo_return.mp3",
+    rumiaEncounter = "assets/audio/SE/Rumia_encounter.mp3",
+    tileBatch = "assets/audio/SE/Tile_batch.mp3",
+    tileSpin = "assets/audio/SE/Tile_spin.mp3",
+  }
+  for id, path in pairs(files) do pcall(function() sfxSources[id] = love.audio.newSource(path, "static") end) end
+end
+
+function playSfx(id, volume, fadeTail)
+  local base = sfxSources[id]
+  if not base then return end
+  pcall(function()
+    local s = base:clone()
+    s:setVolume(volume or 0.8)
+    s:play()
+    if fadeTail then activeSfx[#activeSfx + 1] = { source = s, volume = volume or 0.8, fadeTail = fadeTail } end
+  end)
+end
+
+function updateSfx()
+  for i = #activeSfx, 1, -1 do
+    local item = activeSfx[i]
+    local s = item.source
+    if not s:isPlaying() then
+      table.remove(activeSfx, i)
+    else
+      local okDur, dur = pcall(function() return s:getDuration("seconds") end)
+      local okTell, pos = pcall(function() return s:tell("seconds") end)
+      if okDur and okTell and dur and pos then
+        local remain = dur - pos
+        if remain < item.fadeTail then s:setVolume(item.volume * math.max(0, remain / item.fadeTail)) end
+      end
+    end
+  end
+end
+
 function love.load()
   math.randomseed(os.time())
   uiFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13)
@@ -2029,6 +2225,7 @@ function love.load()
     portraits.rumia = love.graphics.newImage("assets/Images/Rumia.png")
     portraits.blind = love.graphics.newImage("assets/Images/Blind.png")
   end
+  loadSfx()
   playNextBgm()
   selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
   loadScenario(1)
@@ -2037,6 +2234,7 @@ end
 function love.update(dt)
   simTime = simTime + dt
   if bgm and not bgm:isPlaying() then playNextBgm() end
+  updateSfx()
   updateDisturbance(dt)
   updateRumia(dt)
   if dirty then
@@ -2045,6 +2243,7 @@ function love.update(dt)
   remapWaitingCargo()
   updateTileTweens(dt)
   updateCargoTweens(dt)
+  updateRecallCargo(dt)
   updateConsumableTween(dt)
   updateCharacterCue(dt)
   updateDeniedShakes(dt)
@@ -2184,6 +2383,7 @@ function love.draw()
   drawDisturbanceAlertWorld()
   if debug then drawFlow() end
   drawCargo()
+  drawRecallCargo()
   drawRumiaOrb()
   drawDeniedBorders()
   love.graphics.pop()
@@ -2204,13 +2404,14 @@ function leftClickBoard(x, y)
     return
   end
   local consumeId = placementConsumableId(board[y][x])
-  if cellHasCargo(x, y) or (not consumeId and not canModifyCell(board[y][x], "player")) then denyCellAction(x, y); return end
+  if not consumeId and not canModifyCell(board[y][x], "player") then denyCellAction(x, y); return end
   if pendingSchema then
     if key(x, y) == key(pendingSchema.x, pendingSchema.y) then denyCellAction(x, y); return end
     if board[y][x].kind ~= "empty" and not consumeId then denyCellAction(x, y); return end
     if consumeId then board[y][x] = { kind = "empty" } end
     if setSchemaTile(x, y, "out", pendingSchema.pair, placementRotation) then
       usePlacementConsumable(consumeId)
+      playSfx("tileBatch", 0.75)
       schemaStock = math.max(0, schemaStock - 1)
       replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = "schema_out", rotation = placementRotation, pair = pendingSchema.pair }
       pendingSchema = nil
@@ -2223,13 +2424,17 @@ function leftClickBoard(x, y)
     if consumeId then board[y][x] = { kind = "empty" } end
     if setSchemaTile(x, y, "in", pair, placementRotation) then
       usePlacementConsumable(consumeId)
+      playSfx("tileBatch", 0.75)
       pendingSchema = { pair = pair, x = x, y = y }
       replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = "schema_in", rotation = placementRotation, pair = pair }
     end
   else
+    local cell = board[y][x]
+    if not consumeId and cell.kind == "tile" and cell.type == names[selected] and cell.rotation == placementRotation then return end
     if consumeId then board[y][x] = { kind = "empty" } end
     if setTile(x, y, names[selected], placementRotation) then
       usePlacementConsumable(consumeId)
+      playSfx("tileBatch", 0.75)
     replayEvents[#replayEvents + 1] = { t = simTime, action = "place", x = x, y = y, tile = names[selected], rotation = placementRotation }
   else
     denyCellAction(x, y)
@@ -2257,6 +2462,11 @@ end
 function love.mousepressed(mx, my, button)
   local tab = topTabHit(mx, my)
   if tab and button == 1 then topTab = tab; return end
+  if button == 1 and cooldownSliderHit(mx, my) then
+    cooldownSliderDrag = true
+    setDisturbanceCooldownFromMouse(mx)
+    return
+  end
   if editorSizing then return end
   local hit = panelHit(mx, my)
   if hit and button == 1 then
@@ -2270,18 +2480,22 @@ function love.mousepressed(mx, my, button)
     return
   end
   if editorMode and button == 2 then
-    if cellHasCargo(x, y) then denyCellAction(x, y); return end
     clearCellAt(x, y)
     editorMessage = "Cleared " .. x .. "," .. y
   elseif button == 2 then
-    if cellHasCargo(x, y) or not canModifyCell(board[y][x], "player") then denyCellAction(x, y); return end
+    if not canModifyCell(board[y][x], "player") then denyCellAction(x, y); return end
     if board[y][x].kind ~= "tile" then return end
     if removeTileAt(x, y) then replayEvents[#replayEvents + 1] = { t = simTime, action = "remove", x = x, y = y } end
   end
 end
 
 function love.mousereleased(mx, my, button)
+  if button == 1 and cooldownSliderDrag then cooldownSliderDrag = false; return end
   if button == 1 then releaseBoardDrag(mx, my) end
+end
+
+function love.mousemoved(mx, my)
+  if cooldownSliderDrag then setDisturbanceCooldownFromMouse(mx) end
 end
 
 function love.keypressed(k)
@@ -2344,12 +2558,14 @@ function love.keypressed(k)
       cell.output = rotationLabel(cell.rotation)
       for _, s in ipairs(sources) do if s.x == x and s.y == y then s.rotation, s.output = cell.rotation, cell.output end end
       dirty = true
+      playSfx("tileSpin", 0.75)
     elseif editorMode and inBounds(x, y) and board[y][x].kind == "dest" then
       local cell = board[y][x]
       cell.rotation = (cell.rotation + 1) % 4
       cell.inputs = { rotationLabel(cell.rotation) }
       for _, d in ipairs(dests) do if d.x == x and d.y == y then d.rotation, d.inputs = cell.rotation, cell.inputs end end
       dirty = true
+      playSfx("tileSpin", 0.75)
     elseif editorMode and inBounds(x, y) and board[y][x].kind == "tile" then
       rotateCargoInCell(x, y)
       rotateTile(board[y][x])
@@ -2357,6 +2573,7 @@ function love.keypressed(k)
       dirty = true
       recalcFlow()
       remapCargoInCell(x, y)
+      playSfx("tileSpin", 0.75)
     elseif inBounds(x, y) and not canModifyCell(board[y][x], "player") then
       denyCellAction(x, y)
     elseif inBounds(x, y) and board[y][x].kind == "tile" then
@@ -2366,6 +2583,7 @@ function love.keypressed(k)
       dirty = true
       recalcFlow()
       remapCargoInCell(x, y)
+      playSfx("tileSpin", 0.75)
       replayEvents[#replayEvents + 1] = { t = simTime, action = "rotate", x = x, y = y }
     else
       placementRotation = (placementRotation + 1) % 4

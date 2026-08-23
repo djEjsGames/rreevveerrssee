@@ -48,9 +48,10 @@ function M.recalc(api)
     if api.inBounds(f.x, f.y) then
       local cell = api.board[f.y][f.x]
       if cell.kind == "tile" then
-        for _, exit in ipairs(tileRules.exitsFor(cell, f.entry, api.schemaPairComplete, api.rules)) do
+        local flowCell = cell.occupiedBy == "yuyuko" and { kind = "tile", type = "backdoor", rotation = 0, occupiedBy = "yuyuko" } or cell
+        for _, exit in ipairs(tileRules.exitsFor(flowCell, f.entry, api.schemaPairComplete, api.rules)) do
           if (cell.type ~= "splitter" and cell.type ~= "merger") or exitConnects(api, flows, f.x, f.y, exit) then
-            local lane = { x = f.x, y = f.y, entry = f.entry, exit = exit, type = cell.type, pair = cell.pair, source = f.source, strength = f.strength, dist = f.dist + 1 }
+            local lane = { x = f.x, y = f.y, entry = f.entry, exit = exit, type = flowCell.type, pair = flowCell.pair, occupiedBy = flowCell.occupiedBy, source = f.source, strength = f.strength, dist = f.dist + 1 }
             claimLane(flows, lane, api.key, api.laneKey)
             local lk = api.laneKey(f.x, f.y, f.entry, exit)
             flows.from[f.x .. "," .. f.y .. "," .. f.entry] = flows.from[f.x .. "," .. f.y .. "," .. f.entry] or {}
@@ -76,6 +77,7 @@ function M.recalc(api)
 end
 
 function M.laneAfter(api, lane)
+  if lane.occupiedBy == "yuyuko" and lane.exit == "C" then return nil, "lost" end
   if lane.type == "backdoor" and lane.exit == "C" then return nil, "stock" end
   if (lane.type == "schema_in" or lane.type == "schema_out") and lane.exit == "C" then
     local target = api.rules and api.rules.reverseFlow and "in" or "out"
