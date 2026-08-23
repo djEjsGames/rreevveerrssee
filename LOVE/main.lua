@@ -32,6 +32,7 @@ local pendingDisturbance = nil
 local disturbanceTweenDuration = config.disturbanceTweenDuration
 local deniedShakes = {}
 recallCargo = {}
+lostCargo = 0
 dragStart = nil
 consumableOrder = { "none", "cirno_wing", "momoyo_pickaxe" }
 consumableCounts = { cirno_wing = 3, momoyo_pickaxe = 3 }
@@ -154,6 +155,7 @@ function swapTiles(ax, ay, bx, by, layer)
   if ax == bx and ay == by then return false end
   if not inBounds(ax, ay) or not inBounds(bx, by) then return false end
   local a, b = board[ay][ax], board[by][bx]
+  if not canModifyCell(a, layer or "player") or not canModifyCell(b, layer or "player") then return false end
   if not ((a.kind == "tile" or a.kind == "empty") and (b.kind == "tile" or b.kind == "empty")) then return false end
   if a.kind == "empty" and b.kind == "empty" then return false end
   if recallCargoInCell then recallCargoInCell(ax, ay); recallCargoInCell(bx, by) end
@@ -266,6 +268,7 @@ resetScenario = function(n, w, h, title)
   simTime = 0
   replayEvents = { { t = 0, action = "scenario", scenario = n } }
   nextCargoId, status, dirty = 1, "running", true
+  lostCargo = 0
   disturbanceTimer, rumiaOrb, rumiaTrail = config.firstDisturbanceDelay, nil, {}
   cameraX, cameraY, zoom = 0, 0, 1
   if fitBoardToView then fitBoardToView() end
@@ -707,6 +710,12 @@ local function returnToStock(c)
   c.state = "removed"
 end
 
+function loseCargo(c)
+  if c.state == "removed" then return end
+  lostCargo = lostCargo + 1
+  c.state = "removed"
+end
+
 local function deliver(destId, c)
   for _, d in ipairs(dests) do
     if d.id == destId then
@@ -793,7 +802,7 @@ local function moveCargo(dt)
   for _, c in ipairs(cargo) do
     if c.state ~= "removed" then
       if cargoInYuyukoCell(c) then
-        c.state = "removed"
+        loseCargo(c)
       else
         local lane = flows.lanes[c.lane]
         if not lane or lane.blocked then
@@ -818,8 +827,8 @@ local function moveCargo(dt)
               deliverToSource(destId, c)
             elseif why == "stock" then
               returnToStock(c)
-            elseif why == "lost" then
-              c.state = "removed"
+          elseif why == "lost" then
+            loseCargo(c)
             elseif nextLane and laneHasSpace(nextLane, 0) then
               c.lane, c.progress, c.state = nextLane, 0, "moving"
               c.visualLane = laneSnapshot(flows.lanes[nextLane])
@@ -1335,6 +1344,8 @@ local function drawProgressPanel()
     lineY = lineY + 20
   end
   lineY = lineY + 10
+  love.graphics.print("Lost  " .. tostring(lostCargo), x + 16, lineY)
+  lineY = lineY + 24
   love.graphics.print("Destinations", x + 16, lineY)
   lineY = lineY + 24
   for _, d in ipairs(dests) do
@@ -1811,7 +1822,7 @@ function removeCargoInRegion(d)
     if c.state ~= "removed" then
       local lane = flows.lanes[c.lane] or c.visualLane
       local x, y = lane and lane.x or c.cellX, lane and lane.y or c.cellY
-      if x and y and x >= d.x and y >= d.y and x < d.x + d.size and y < d.y + d.size then c.state = "removed" end
+      if x and y and x >= d.x and y >= d.y and x < d.x + d.size and y < d.y + d.size then loseCargo(c) end
     end
   end
 end
