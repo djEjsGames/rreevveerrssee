@@ -425,16 +425,18 @@ function updateRecallCargo(dt)
     local r = recallCargo[i]
     r.time = r.time + dt
     local t = math.min(1, r.time / r.duration)
-    if t >= 1 then table.remove(recallCargo, i) goto continue end
-    local q = t * t
-    r.x = bezierPoint(r.sx, r.c1x, r.c2x, r.tx, q)
-    r.y = bezierPoint(r.sy, r.c1y, r.c2y, r.ty, q)
-    r.trail[#r.trail + 1] = { x = r.x, y = r.y, time = 0, duration = 0.2 + math.random() * 0.1 }
-    for j = #r.trail, 1, -1 do
-      r.trail[j].time = r.trail[j].time + dt
-      if r.trail[j].time >= r.trail[j].duration then table.remove(r.trail, j) end
+    if t >= 1 then
+      table.remove(recallCargo, i)
+    else
+      local q = t * t
+      r.x = bezierPoint(r.sx, r.c1x, r.c2x, r.tx, q)
+      r.y = bezierPoint(r.sy, r.c1y, r.c2y, r.ty, q)
+      r.trail[#r.trail + 1] = { x = r.x, y = r.y, time = 0, duration = 0.2 + math.random() * 0.1 }
+      for j = #r.trail, 1, -1 do
+        r.trail[j].time = r.trail[j].time + dt
+        if r.trail[j].time >= r.trail[j].duration then table.remove(r.trail, j) end
+      end
     end
-    ::continue::
   end
 end
 
