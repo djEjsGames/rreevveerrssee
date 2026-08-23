@@ -308,6 +308,20 @@ local function boardToken(cell)
   return ({ empty = ".", source = "A", dest = "B" })[cell.kind]
 end
 
+function cellData(x, y, cell)
+  if cell.kind == "tile" then return { x = x, y = y, kind = "tile", type = cell.type, rotation = cell.rotation, pair = cell.pair, occupiedBy = cell.occupiedBy } end
+  if cell.kind == "obstacle" then return { x = x, y = y, kind = "obstacle", type = cell.type, transform = cell.transform, occupiedBy = cell.occupiedBy } end
+  if cell.occupiedBy then return { x = x, y = y, kind = cell.kind, occupiedBy = cell.occupiedBy } end
+end
+
+function sourceData(s)
+  return { id = s.id, x = s.x, y = s.y, output = s.output, rotation = s.rotation, strength = s.strength, cargoType = s.cargoType, remaining = s.remaining, timer = s.timer, interval = s.interval, received = common.copyReq(s.received) }
+end
+
+function destinationData(d)
+  return { id = d.id, x = d.x, y = d.y, inputs = d.inputs, rotation = d.rotation, req = common.copyReq(d.req), got = common.copyReq(d.got), wrong = d.wrong, timer = d.timer, reverseSent = d.reverseSent }
+end
+
 function tileSegments(tile) return tileRules.segments(tile, ruleInversions) end
 function tilePorts(tile) return tileRules.ports(tile, ruleInversions) end
 function baseTileSegments(typeName) return tileRules.baseSegments(typeName, ruleInversions) end
@@ -487,7 +501,7 @@ local function laneHasSpace(lk, progress, ignoreId, fromProgress)
   for _, c in ipairs(cargo) do
     if c.id ~= ignoreId and c.state ~= "removed" and c.lane == lk then
       if not fromProgress and math.abs(c.progress - progress) < cargoSpacing then return false end
-      if fromProgress and c.progress >= fromProgress and c.progress - progress < cargoSpacing then return false end
+      if fromProgress and c.progress > fromProgress and c.progress - progress < cargoSpacing then return false end
     end
   end
   return true
@@ -598,6 +612,17 @@ denyCellAction = function(x, y)
   playSfx("tileDeny", 0.75)
 end
 
+function nearestProgressOnLane(lane, lx, ly)
+  local bestProgress, bestDist
+  for i = 0, 24 do
+    local p = i / 24
+    local x, y = laneLocalPoint(lane, p)
+    local dist = (lx - x) * (lx - x) + (ly - y) * (ly - y)
+    if not bestDist or dist < bestDist then bestProgress, bestDist = p, dist end
+  end
+  return bestProgress, bestDist
+end
+
 local function progressOnSegment(lx, ly, ax, ay, bx, by)
   local vx, vy = bx - ax, by - ay
   local len2 = vx * vx + vy * vy
@@ -627,15 +652,21 @@ end
 local function remapCargoInCell(x, y)
   for _, c in ipairs(cargo) do
     if cargoInCell(c, x, y) then
-      local bestLane, bestProgress
+      local bestLane, bestProgress, fallbackLane, fallbackProgress, fallbackDist
       for lk, lane in pairs(flows.lanes) do
         if lane.x == x and lane.y == y and not lane.blocked then
           local p = progressOnLane(lane, c.localX or 0, c.localY or 0)
           if p and (not bestProgress or math.abs(p - c.progress) < math.abs(bestProgress - c.progress)) then
             bestLane, bestProgress = lk, p
+          elseif not p then
+            local np, dist = nearestProgressOnLane(lane, c.localX or 0, c.localY or 0)
+            if np and (not fallbackDist or dist < fallbackDist) then
+              fallbackLane, fallbackProgress, fallbackDist = lk, np, dist
+            end
           end
         end
       end
+      if not bestLane then bestLane, bestProgress = fallbackLane, fallbackProgress end
       if bestLane then
         c.lane, c.progress, c.visualLane, c.visualPoint, c.state = bestLane, bestProgress, laneSnapshot(flows.lanes[bestLane]), nil, "moving"
       else
@@ -792,7 +823,10 @@ end
 
 local function sortCargo()
   table.sort(cargo, function(a, b)
-    if a.lane == b.lane then return a.progress > b.progress end
+    if a.lane == b.lane then
+      if a.progress == b.progress then return a.id < b.id end
+      return a.progress > b.progress
+    end
     return a.id < b.id
   end)
 end
@@ -1031,7 +1065,7 @@ local function drawTopPanel()
     end
   elseif topTab == "debug" then
     line1 = "Debug: " .. (debug and "flow overlay on" or "flow overlay off") .. "   Disturbance: B   Auto: M " .. (disturbanceAutoEnabled and "on" or "off") .. "   Recalc flow: F   Rule invert: N"
-    line2 = "`: debug overlay   C: debug dump   V: replay dump   " .. ruleInversionText()
+    line2 = "`: debug overlay   C: debug dump   V: replay dump   Shift+V: import replay snapshot   " .. ruleInversionText()
   else
     line1 = "Stage: " .. scenario .. "/" .. scenarios.count .. " " .. scenarioTitle .. "   Board: " .. W .. "x" .. H .. "   Zoom: " .. string.format("%.2f", zoom)
     line2 = "State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario") .. "   Space: pause   Tab: stage"
@@ -2094,6 +2128,110 @@ local function parseStageText(text)
   return ok and data or nil
 end
 
+function parseReplayText(text)
+  local env = {}
+  local fn = load(text .. "\nreturn NitoriReplay", "replay", "t", env)
+  if not fn then return nil end
+  local ok, data = pcall(fn)
+  return ok and data or nil
+end
+
+function tokenCell(token)
+  if token == "." then return { kind = "empty" } end
+  local out = token:match("^A:(%u)$")
+  if out then return { kind = "source", output = out } end
+  local inputs = token:match("^B:([NESW]+)$")
+  if inputs then
+    local list = {}
+    for i = 1, #inputs do list[#list + 1] = inputs:sub(i, i) end
+    return { kind = "dest", inputs = list }
+  end
+  if token == "R" or token == "W" then return { kind = "obstacle", type = token == "R" and "rock" or "water", immutable = true } end
+  local label, pair, rot = token:match("^(%u)(%d+):(%d+)$")
+  if not label then label, rot = token:match("^(%u)(%d+)$") end
+  if label then
+    local types = { C = "corner", S = "straight", M = "merger", B = "bridge", D = "backdoor", I = "schema_in", O = "schema_out" }
+    return { kind = "tile", type = types[label] or "straight", pair = pair and tonumber(pair), rotation = tonumber(rot) or 0 }
+  end
+  return { kind = "empty" }
+end
+
+function applyReplaySnapshot(data)
+  local snap = data and data.snapshot
+  if type(snap) ~= "table" then return false, "missing snapshot" end
+  if snap.size then
+    resetScenario(data.scenario or 0, snap.size.w or W, snap.size.h or H, snap.title or "Replay Snapshot")
+  else
+    loadScenario(data.scenario or scenario)
+  end
+  if snap.sources then
+    sources = {}
+    for _, s in ipairs(snap.sources) do
+      setSource({ id = s.id or "A", x = s.x, y = s.y, output = s.output or "E", rotation = s.rotation, strength = s.strength or 1, cargoType = s.cargoType or "box", remaining = s.remaining or 0, timer = s.timer or 0, interval = s.interval or 1, received = s.received })
+    end
+  end
+  if snap.destinations then
+    dests = {}
+    for _, d in ipairs(snap.destinations) do
+      setDest({ id = d.id or "B", x = d.x, y = d.y, inputs = d.inputs or dirs, rotation = d.rotation, req = d.req or { box = 1 }, got = d.got or {}, wrong = d.wrong or 0, timer = d.timer or 0, reverseSent = d.reverseSent })
+    end
+  end
+  paused, characterCue = true, nil
+  cargo, recallCargo, rumiaOrb, rumiaTrail = {}, {}, nil, {}
+  local maxPair = 0
+  if snap.cells then
+    for _, c in ipairs(snap.cells) do
+      if inBounds(c.x, c.y) and (c.kind == "tile" or c.kind == "obstacle" or c.occupiedBy) then
+        if c.kind == "tile" then board[c.y][c.x] = { kind = "tile", type = c.type, rotation = c.rotation or 0, pair = c.pair, occupiedBy = c.occupiedBy }
+        elseif c.kind == "obstacle" then board[c.y][c.x] = { kind = "obstacle", type = c.type or "rock", immutable = true, transform = c.transform, occupiedBy = c.occupiedBy }
+        elseif board[c.y] and board[c.y][c.x] then board[c.y][c.x].occupiedBy = c.occupiedBy end
+        if c.pair then maxPair = math.max(maxPair, c.pair) end
+      end
+    end
+  elseif snap.board then
+    for y, row in ipairs(snap.board) do
+      local x = 1
+      for token in tostring(row):gmatch("%S+") do
+        if inBounds(x, y) then
+          local cell = tokenCell(token)
+          if cell.kind == "tile" or cell.kind == "obstacle" then board[y][x] = cell end
+        end
+        x = x + 1
+      end
+    end
+  end
+  for _, c in ipairs(snap.cargo or {}) do
+    cargo[#cargo + 1] = { id = c.id, type = c.type or "box", state = c.state or "waiting", lane = c.lane, progress = c.progress or 0, cellX = c.cellX, cellY = c.cellY, localX = c.localX or 0, localY = c.localY or 0, visualPoint = c.visualPoint, speed = c.speed or 1.5 }
+    nextCargoId = math.max(nextCargoId, (c.id or 0) + 1)
+  end
+  ruleInversions.reverseFlow = snap.rules and snap.rules.reverseFlow or false
+  ruleInversions.swapSplitMerge = snap.rules and snap.rules.swapSplitMerge or false
+  status = snap.status or data.status or status
+  unlimitedStock = data.unlimitedStock or false
+  lostCargo = snap.lostCargo or lostCargo
+  schemaStock = snap.schemaStock or schemaStock
+  simTime = data.elapsed or simTime
+  disturbanceTimer = snap.disturbanceTimer or disturbanceTimer
+  disturbanceAutoEnabled = snap.disturbanceAutoEnabled ~= false
+  pendingDisturbance = snap.pendingDisturbance
+  rumiaOrb = snap.rumiaOrb
+  nextSchemaId = math.max(nextSchemaId, maxPair + 1)
+  dirty = true
+  recalcFlow()
+  remapWaitingCargo()
+  editorMessage = "Imported replay snapshot"
+  return true
+end
+
+function importReplaySnapshotFromClipboard()
+  local ok, text = pcall(function() return love.system.getClipboardText() end)
+  if not ok or not text or text == "" then editorMessage = "Replay import failed: clipboard is empty"; return end
+  local data = parseReplayText(text)
+  if not data then editorMessage = "Replay import failed: expected NitoriReplay"; return end
+  local applied, err = applyReplaySnapshot(data)
+  if not applied then editorMessage = "Replay import failed: " .. tostring(err) end
+end
+
 local function importStageFromClipboard()
   local ok, text = pcall(function() return love.system.getClipboardText() end)
   if not ok or not text or text == "" then editorMessage = "Import failed: clipboard is empty"; return end
@@ -2135,6 +2273,22 @@ local function replayDumpText()
   end
   lines[#lines + 1] = "  },"
   lines[#lines + 1] = "  snapshot = {"
+  lines[#lines + 1] = "    size = " .. luaValue({ w = W, h = H }, "    ") .. ","
+  lines[#lines + 1] = "    title = " .. q(scenarioTitle) .. ","
+  lines[#lines + 1] = "    status = " .. q(status) .. ","
+  lines[#lines + 1] = "    rules = " .. luaValue(ruleInversions, "    ") .. ","
+  lines[#lines + 1] = "    schemaStock = " .. tostring(schemaStock) .. ","
+  lines[#lines + 1] = "    lostCargo = " .. tostring(lostCargo) .. ","
+  lines[#lines + 1] = "    disturbanceTimer = " .. string.format("%.3f", disturbanceTimer or 0) .. ","
+  lines[#lines + 1] = "    disturbanceAutoEnabled = " .. tostring(disturbanceAutoEnabled) .. ","
+  lines[#lines + 1] = "    pendingDisturbance = " .. luaValue(pendingDisturbance, "    ") .. ","
+  lines[#lines + 1] = "    rumiaOrb = " .. luaValue(rumiaOrb, "    ") .. ","
+  lines[#lines + 1] = "    sources = {"
+  for _, s in ipairs(sources) do lines[#lines + 1] = "      " .. luaValue(sourceData(s), "      ") .. "," end
+  lines[#lines + 1] = "    },"
+  lines[#lines + 1] = "    destinations = {"
+  for _, d in ipairs(dests) do lines[#lines + 1] = "      " .. luaValue(destinationData(d), "      ") .. "," end
+  lines[#lines + 1] = "    },"
   lines[#lines + 1] = "    board = {"
   local mark = { empty = ".", source = "A", dest = "B" }
   for y = 1, H do
@@ -2144,6 +2298,14 @@ local function replayDumpText()
       row[#row + 1] = boardToken(cell)
     end
     lines[#lines + 1] = "      " .. q(table.concat(row, " ")) .. ","
+  end
+  lines[#lines + 1] = "    },"
+  lines[#lines + 1] = "    cells = {"
+  for y = 1, H do
+    for x = 1, W do
+      local data = cellData(x, y, board[y][x])
+      if data then lines[#lines + 1] = "      " .. luaValue(data, "      ") .. "," end
+    end
   end
   lines[#lines + 1] = "    },"
   lines[#lines + 1] = "    cargo = {"
@@ -2534,6 +2696,7 @@ function love.keypressed(k)
   if k == "space" then paused = not paused end
   if k == "`" or k == "grave" then debug = not debug end
   if k == "c" then showDump("Nitori Debug State", exportDebugState()) end
+  if k == "v" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then importReplaySnapshotFromClipboard(); return end
   if k == "v" then showDump("Nitori Replay Dump", replayDumpText()) end
   if k == "g" then
     if editorMode then
