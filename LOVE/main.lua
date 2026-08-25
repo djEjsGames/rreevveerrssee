@@ -40,6 +40,7 @@ equippedConsumable = 1
 consumableTween = nil
 ruleInversions = { reverseFlow = false, swapSplitMerge = false }
 portraits = {}
+icons = {}
 characterCue = nil
 bgm = nil
 uiFont, dialogFont = nil, nil
@@ -48,9 +49,30 @@ local bgmIndex = 0
 local bgmTracks = { "assets/audio/bgm1.mp3", "assets/audio/bgm2.mp3" }
 disturbanceTimer = config.firstDisturbanceDelay
 disturbanceAutoEnabled = true
+disturbancesBlocked = false
 rumiaOrb = nil
 rumiaTrail = {}
 cooldownSliderDrag = false
+gameScene = "map"
+mapAreas = {
+  { name = "Youkai Mountain", jp = "요괴의 산", enabled = true, areaId = "youkai_mountain", scenario = 3, x = 80, y = 70, w = 420, h = 300, tiles = "cliff path, waterfall pipe, kappa gear", obstacles = "cliff, rapid, patrol post" },
+  { name = "Moriya Shrine", jp = "모리야 신사", scenario = 4, x = 250, y = 47, w = 190, h = 95, tiles = "shrine path, faith conduit, lake bridge", obstacles = "sacred tree, shrine rope, wind lake" },
+  { name = "Tengu Base", jp = "텐구 기지", scenario = 3, x = 370, y = 190, w = 150, h = 95, tiles = "watch route, wind post, report lane", obstacles = "watchtower, barricade, cliff edge" },
+  { name = "Geyser", jp = "간헐천", scenario = 2, x = -32, y = 142, w = 180, h = 100, tiles = "steam pipe, heat valve, pressure bend", obstacles = "geyser vent, hot spring, steam wall" },
+  { name = "Former Hell", jp = "지령전", scenario = 1, x = 80, y = 440, w = 360, h = 210, tiles = "underground rail, furnace duct, mind corridor", obstacles = "lava crack, old hell wall, vengeful spirit" },
+  { name = "Misty Lake", jp = "안개 호수", scenario = 4, x = 590, y = 100, w = 330, h = 210, tiles = "pier route, ice channel, fog lane", obstacles = "lake water, thin ice, thick fog" },
+  { name = "Scarlet Devil Mansion", jp = "홍마관", scenario = 5, x = 705, y = 170, w = 170, h = 95, tiles = "red hall, library rail, servant passage", obstacles = "wall, bookshelf, locked door" },
+  { name = "Hakurei Shrine", jp = "하쿠레이 신사", scenario = 1, x = 1180, y = 120, w = 230, h = 120, tiles = "approach path, torii turn, border line", obstacles = "forest, stairs, barrier stone" },
+  { name = "Human Village", jp = "인간 마을", scenario = 2, x = 700, y = 420, w = 300, h = 190, tiles = "street, shop alley, storehouse lane", obstacles = "house, fence, well" },
+  { name = "Palanquin Ship", jp = "성련선", scenario = 6, x = 1060, y = 415, w = 240, h = 115, tiles = "deck route, cargo hold, cloud wake", obstacles = "mast, railing, sail" },
+  { name = "Divine Spirit Mausoleum", jp = "신령묘", scenario = 7, x = 1110, y = 560, w = 220, h = 110, tiles = "stone chamber, talisman path, tao conduit", obstacles = "tombstone, sealed door, stone wall" },
+  { name = "Bamboo Forest", jp = "미혹의 죽림", scenario = 3, x = 1230, y = 720, w = 360, h = 230, tiles = "bamboo trail, moonlit bend, hidden track", obstacles = "bamboo thicket, blind path, rabbit trap" },
+  { name = "Eientei", jp = "영원정", scenario = 8, x = 1365, y = 805, w = 170, h = 95, tiles = "mansion hall, medicine line, moon corridor", obstacles = "sliding door, medicine shelf, illusion screen" },
+  { name = "Sunflower Field", jp = "해바라기 밭", scenario = 6, x = 560, y = 760, w = 360, h = 180, tiles = "flower row, sunny path, fairy loop", obstacles = "sunflower wall, tall grass, fairy crowd" },
+  { name = "Hakugyokurou", jp = "백옥루", scenario = 7, x = 1000, y = -120, w = 260, h = 120, tiles = "cherry path, ghost stair, nether bridge", obstacles = "cherry tree, spirit wall, garden gate" },
+  { name = "Beast Realm", jp = "축생계", scenario = 5, x = 1480, y = 430, w = 240, h = 150, tiles = "beast road, faction track, arena route", obstacles = "mud, bone fence, territory wall" },
+}
+currentArea = nil
 local disturbanceEffects = config.disturbanceEffects
 local key, laneKey = common.key, common.laneKey
 local function inBounds(x, y) return common.inBounds(x, y, W, H) end
@@ -263,6 +285,7 @@ end
 
 resetScenario = function(n, w, h, title)
   scenario, W, H, scenarioTitle = n, w, h, title
+  currentArea = nil
   board, sources, dests, cargo, flows, splitState = newBoard(), {}, {}, {}, {}, {}
   nextSchemaId, schemaStock, pendingSchema = 1, 2, nil
   simTime = 0
@@ -282,6 +305,64 @@ local function loadScenario(n)
     setTile = setTile,
     setObstacle = setObstacle,
   })
+end
+
+function loadYoukaiMountainArea()
+  resetScenario(101, 20, 30, "요괴의 산")
+  unlimitedStock = true
+
+  local reserved = {}
+  local function reserve(x, y) if x >= 1 and x <= W and y >= 1 and y <= H then reserved[key(x, y)] = true end end
+  local function reserveLine(x1, y1, x2, y2)
+    local sx, sy = x1 == x2 and 0 or (x1 < x2 and 1 or -1), y1 == y2 and 0 or (y1 < y2 and 1 or -1)
+    local x, y = x1, y1
+    while true do
+      reserve(x, y)
+      if x == x2 and y == y2 then break end
+      x, y = x + sx, y + sy
+    end
+  end
+  for y = 14, 16 do for x = 9, 13 do reserve(x, y) end end
+  reserveLine(12, 15, 19, 15); reserveLine(19, 15, 19, 5)
+  reserveLine(10, 15, 2, 15); reserveLine(2, 15, 2, 18)
+  reserveLine(12, 15, 12, 1)
+  reserve(20, 5); reserve(1, 18)
+  local function fillRect(typeName, target, x1, y1, x2, y2)
+    for y = y1, y2 do
+      for x = x1, x2 do
+        if target <= 0 then return 0 end
+        if not reserved[key(x, y)] and board[y][x].kind == "empty" then
+          setObstacle(x, y, typeName)
+          target = target - 1
+        end
+      end
+    end
+    return target
+  end
+
+  fillRect("water", 60, 5, 1, 6, 30)
+  local rocks = 390
+  rocks = fillRect("rock", rocks, 1, 1, 8, 30)
+  rocks = fillRect("rock", rocks, 14, 1, 20, 30)
+  rocks = fillRect("rock", rocks, 9, 1, 13, 6)
+  fillRect("rock", rocks, 9, 25, 13, 30)
+
+  setSource({ id = "A1", x = 10, y = 15, output = "E", strength = 1, cargoType = "오이", remaining = -1, timer = 0, interval = 0.8 })
+  setSource({ id = "A2", x = 12, y = 15, output = "W", strength = 1, cargoType = "오이", remaining = -1, timer = 0, interval = 0.8 })
+  board[15][10].rotatable = true
+  board[15][12].rotatable = true
+  setDest({ id = "B1", label = "텐구", x = 20, y = 5, inputs = { "W" }, req = { ["오이"] = 30 }, got = {}, wrong = 0 })
+  setDest({ id = "B2", label = "캇파", x = 1, y = 18, inputs = { "E" }, req = { ["오이"] = 30 }, got = {}, wrong = 0 })
+  setDest({ id = "B3", label = "모리야", x = 12, y = 1, inputs = { "S" }, req = { ["오이"] = 30 }, got = {}, wrong = 0 })
+end
+
+function loadAreaScenario(area)
+  if area.areaId == "youkai_mountain" then loadYoukaiMountainArea(); return end
+  loadScenario(area.scenario)
+end
+
+function mapAreaById(areaId)
+  for _, area in ipairs(mapAreas) do if area.areaId == areaId then return area end end
 end
 
 local function startEditorSizing()
@@ -1042,7 +1123,7 @@ local function drawTopPanel()
   if topTab == "build" then
     local schemaText = pendingSchema and ("place exit #" .. pendingSchema.pair) or ("stock " .. schemaStock)
     line1 = "Selected: " .. names[selected] .. "   Rotation: " .. placementRotation .. " " .. rotationLabel(placementRotation) .. "   Schema: " .. schemaText
-    line2 = "Left: place/replace   Right: remove   R: rotate   Wheel: zoom   WASD: camera"
+    line2 = "Left: place/replace   Right: remove   R: rotate   Wheel: zoom   WASD: camera   Esc: map"
   elseif topTab == "editor" then
     if editorSizing then
       line1 = "Editor setup: choose board size with 1, 2, or 3"
@@ -1068,13 +1149,86 @@ local function drawTopPanel()
     line2 = "`: debug overlay   C: debug dump   V: replay dump   Shift+V: import replay snapshot   " .. ruleInversionText()
   else
     line1 = "Stage: " .. scenario .. "/" .. scenarios.count .. " " .. scenarioTitle .. "   Board: " .. W .. "x" .. H .. "   Zoom: " .. string.format("%.2f", zoom)
-    line2 = "State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario") .. "   Space: pause   Tab: stage"
+    line2 = "State: " .. status .. (paused and " paused" or "") .. "   Stock: " .. (unlimitedStock and "unlimited" or "scenario") .. "   Space: pause   Esc: map"
   end
 
   love.graphics.setColor(colors.text)
   love.graphics.print(line1, 24, 50)
   love.graphics.print(editorMessage ~= "" and editorMessage or line2, 24, 74)
   drawCooldownSlider()
+end
+
+function mapAreaAt(mx, my)
+  mx, my = (mx - cameraX) / zoom, (my - cameraY) / zoom
+  for i = #mapAreas, 1, -1 do
+    local area = mapAreas[i]
+    if mx >= area.x and mx <= area.x + area.w and my >= area.y and my <= area.y + area.h then return i, area end
+  end
+end
+
+function mapCellAt(mx, my)
+  local wx, wy = (mx - cameraX) / zoom, (my - cameraY) / zoom
+  return math.floor(wx / CELL), math.floor(wy / CELL)
+end
+
+function selectMapArea(area)
+  if area.enabled == false then return end
+  loadAreaScenario(area)
+  currentArea = area
+  gameScene = "play"
+  scenarioTitle = area.jp
+  editorMessage = area.jp .. " selected"
+end
+
+function drawMapSelectScene()
+  love.graphics.clear(colors.bg)
+  local mx, my = love.mouse.getPosition()
+  local hoverIndex = mapAreaAt(mx, my)
+
+  love.graphics.push()
+  love.graphics.translate(cameraX, cameraY)
+  love.graphics.scale(zoom)
+
+  love.graphics.setColor(colors.grid)
+  love.graphics.setLineWidth(1)
+  for x = -240, 1760, CELL do love.graphics.line(x, -160, x, 1000) end
+  for y = -144, 1000, CELL do love.graphics.line(-240, y, 1760, y) end
+
+  for i, area in ipairs(mapAreas) do
+    if area.enabled ~= false then
+      love.graphics.setColor(i == hoverIndex and colors.selected or colors.tile)
+    else
+      love.graphics.setColor(0.12, 0.13, 0.14, 0.72)
+    end
+    love.graphics.rectangle("fill", area.x, area.y, area.w, area.h, 6, 6)
+    if area.enabled ~= false then
+      love.graphics.setColor(i == hoverIndex and colors.hover or colors.grid)
+    else
+      love.graphics.setColor(0.24, 0.24, 0.24)
+    end
+    love.graphics.setLineWidth(i == hoverIndex and 3 or 1)
+    love.graphics.rectangle("line", area.x, area.y, area.w, area.h, 6, 6)
+    if area.enabled ~= false then love.graphics.setColor(colors.text) else love.graphics.setColor(0.48, 0.5, 0.48) end
+    love.graphics.print(i .. ". " .. area.jp, area.x + 18, area.y + 22)
+    love.graphics.print(area.enabled ~= false and area.name or "Locked", area.x + 18, area.y + 54)
+  end
+  love.graphics.setLineWidth(1)
+  love.graphics.pop()
+
+  love.graphics.setColor(colors.panel)
+  love.graphics.rectangle("fill", 14, 10, math.max(360, screenSize() - 28), hoverIndex and 122 or 72, 5, 5)
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Map Select", 24, 24)
+  love.graphics.print("Left: choose area   Wheel: zoom   WASD: camera", 24, 50)
+  if hoverIndex then
+    local area = mapAreas[hoverIndex]
+    if area.enabled ~= false then
+      love.graphics.print("Tiles: " .. area.tiles, 24, 78)
+      love.graphics.print("Obstacles: " .. area.obstacles, 24, 102)
+    else
+      love.graphics.print("Locked area", 24, 78)
+    end
+  end
 end
 
 local function drawTileIcon(tile, x, y, size)
@@ -1384,7 +1538,7 @@ local function drawProgressPanel()
   lineY = lineY + 24
   for _, d in ipairs(dests) do
     for t, n in pairs(d.req) do
-      love.graphics.print(d.id .. "  in:" .. table.concat(d.inputs or dirs, "") .. "  " .. t .. " " .. tostring(d.got[t] or 0) .. "/" .. n .. "  wrong:" .. d.wrong, x + 16, lineY)
+      love.graphics.print(d.id .. " " .. (d.label or "") .. "  in:" .. table.concat(d.inputs or dirs, "") .. "  " .. t .. " " .. tostring(d.got[t] or 0) .. "/" .. n .. "  wrong:" .. d.wrong, x + 16, lineY)
       lineY = lineY + 20
       if lineY > y + h - 22 then return end
     end
@@ -1827,7 +1981,8 @@ local function randomYuyukoRegion()
   end
 end
 
-local function startDisturbance()
+local function startDisturbance(manual)
+  if disturbancesBlocked and not manual then return end
   if dirty then recalcFlow() end
   local pick = math.random(1, 3)
   if pick == 1 then return startRumiaDisturbance() end
@@ -2401,6 +2556,7 @@ function love.load()
     portraits.yuyuko = love.graphics.newImage("assets/Images/Yuyuko.png")
     portraits.rumia = love.graphics.newImage("assets/Images/Rumia.png")
     portraits.blind = love.graphics.newImage("assets/Images/Blind.png")
+    icons.lock = love.graphics.newImage("assets/Images/Icon/Lock.png")
   end
   loadSfx()
   playNextBgm()
@@ -2412,7 +2568,13 @@ function love.update(dt)
   simTime = simTime + dt
   if bgm and not bgm:isPlaying() then playNextBgm() end
   updateSfx()
-  updateDisturbance(dt)
+  local move = cameraSpeed * dt
+  if love.keyboard.isDown("a") then cameraX = cameraX + move end
+  if love.keyboard.isDown("d") then cameraX = cameraX - move end
+  if love.keyboard.isDown("w") then cameraY = cameraY + move end
+  if love.keyboard.isDown("s") then cameraY = cameraY - move end
+  if gameScene == "map" then return end
+  if not disturbancesBlocked or pendingDisturbance then updateDisturbance(dt) end
   updateRumia(dt)
   if dirty then
     recalcFlow()
@@ -2424,12 +2586,7 @@ function love.update(dt)
   updateConsumableTween(dt)
   updateCharacterCue(dt)
   updateDeniedShakes(dt)
-  local move = cameraSpeed * dt
-  if love.keyboard.isDown("a") then cameraX = cameraX + move end
-  if love.keyboard.isDown("d") then cameraX = cameraX - move end
-  if love.keyboard.isDown("w") then cameraY = cameraY + move end
-  if love.keyboard.isDown("s") then cameraY = cameraY - move end
-  if not paused and status == "running" and disturbanceAutoEnabled then
+  if not disturbancesBlocked and not paused and status == "running" and disturbanceAutoEnabled then
     disturbanceTimer = disturbanceTimer - dt
     if disturbanceTimer <= 0 and not pendingDisturbance and not rumiaOrb then startDisturbance() end
   end
@@ -2499,10 +2656,17 @@ local function drawDestCell(cell, bx, by)
   love.graphics.setLineWidth(1)
 end
 
-local function drawEditorMarker(cell, bx, by)
-  if not editorMode or not cell.immutable or cell.kind == "source" or cell.kind == "dest" then return end
-  love.graphics.setColor(colors.block)
-  love.graphics.rectangle("fill", bx + CELL - 12, by + 4, 8, 8, 2, 2)
+local function drawEditorMarker(cell, bx, by, hovered)
+  if (not editorMode and not hovered) or not cell.immutable or cell.kind == "source" or cell.kind == "dest" then return end
+  if icons.lock then
+    local size = 14
+    local scale = size / math.max(icons.lock:getWidth(), icons.lock:getHeight())
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.draw(icons.lock, bx + CELL - size - 4, by + 4, 0, scale, scale)
+  else
+    love.graphics.setColor(colors.block)
+    love.graphics.rectangle("fill", bx + CELL - 12, by + 4, 8, 8, 2, 2)
+  end
 end
 
 local function drawEditorSizingOverlay()
@@ -2524,6 +2688,8 @@ local function drawEditorSizingOverlay()
 end
 
 function love.draw()
+  if gameScene == "map" then drawMapSelectScene(); return end
+
   love.graphics.clear(colors.bg)
 
   local hx, hy = cellAt(love.mouse.getPosition())
@@ -2546,7 +2712,7 @@ function love.draw()
         drawDestCell(cell, bx, by)
       end
       drawOccupation(cell, bx, by)
-      drawEditorMarker(cell, bx, by)
+      drawEditorMarker(cell, bx, by, x == hx and y == hy)
       love.graphics.setColor(colors.grid)
       love.graphics.rectangle("line", bx, by, CELL, CELL)
     end
@@ -2637,6 +2803,13 @@ function releaseBoardDrag(mx, my)
 end
 
 function love.mousepressed(mx, my, button)
+  if gameScene == "map" then
+    if button == 1 then
+      local _, area = mapAreaAt(mx, my)
+      if area then selectMapArea(area) end
+    end
+    return
+  end
   local tab = topTabHit(mx, my)
   if tab and button == 1 then topTab = tab; return end
   if button == 1 and cooldownSliderHit(mx, my) then
@@ -2676,6 +2849,11 @@ function love.mousemoved(mx, my)
 end
 
 function love.keypressed(k)
+  if gameScene == "map" then
+    local numberKey = tonumber(k)
+    if numberKey and mapAreas[numberKey] then selectMapArea(mapAreas[numberKey]) end
+    return
+  end
   local numberKey = tonumber(k)
   if editorSizing then
     if numberKey and createEditorStage(numberKey) then return end
@@ -2719,7 +2897,7 @@ function love.keypressed(k)
       editorMessage = "Lock " .. x .. "," .. y .. ": " .. tostring(board[y][x].immutable)
     end
   end
-  if k == "b" then startDisturbance() end
+  if k == "b" then startDisturbance(true) end
   if k == "m" then disturbanceAutoEnabled = not disturbanceAutoEnabled end
   if k == "n" then randomizeRuleInversions(); return end
   if k == "u" then
@@ -2728,6 +2906,7 @@ function love.keypressed(k)
   end
   if k == "f" then dirty = true end
   if k == "tab" then loadScenario(scenario % scenarios.count + 1) end
+  if k == "escape" then gameScene = "map"; cameraX, cameraY, zoom = 0, 0, 1; return end
   if k == "r" then
     local x, y = cellAt(love.mouse.getPosition())
     if editorMode and inBounds(x, y) and board[y][x].kind == "source" then
@@ -2751,6 +2930,13 @@ function love.keypressed(k)
       dirty = true
       recalcFlow()
       remapCargoInCell(x, y)
+      playSfx("tileSpin", 0.75)
+    elseif inBounds(x, y) and board[y][x].kind == "source" and board[y][x].rotatable then
+      local cell = board[y][x]
+      cell.rotation = (cell.rotation + 1) % 4
+      cell.output = rotationLabel(cell.rotation)
+      for _, s in ipairs(sources) do if s.x == x and s.y == y then s.rotation, s.output = cell.rotation, cell.output end end
+      dirty = true
       playSfx("tileSpin", 0.75)
     elseif inBounds(x, y) and not canModifyCell(board[y][x], "player") then
       denyCellAction(x, y)
