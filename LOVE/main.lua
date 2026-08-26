@@ -2,6 +2,8 @@ local config = require("src.config")
 local common = require("src.common")
 local editor = require("src.editor")
 local scenarios = require("src.scenarios")
+storyDialogueScene = require("src.dialogue_scene")
+dialogueScripts = require("src.dialogue_scripts")
 local tileRules = require("src.tile_rules")
 local flowRules = require("src.flow")
 
@@ -41,15 +43,18 @@ consumableTween = nil
 ruleInversions = { reverseFlow = false, swapSplitMerge = false }
 portraits = {}
 icons = {}
+backgrounds = {}
 characterCue = nil
 bgm = nil
 uiFont, dialogFont = nil, nil
 sfxSources, activeSfx = {}, {}
 local bgmIndex = 0
 local bgmTracks = { "assets/audio/bgm1.mp3", "assets/audio/bgm2.mp3" }
+bgmFade = nil
+dialogueTestPanelOpen = false
 disturbanceTimer = config.firstDisturbanceDelay
 disturbanceAutoEnabled = true
-disturbancesBlocked = false
+disturbancesBlocked = true
 rumiaOrb = nil
 rumiaTrail = {}
 cooldownSliderDrag = false
@@ -1180,6 +1185,78 @@ function selectMapArea(area)
   editorMessage = area.jp .. " selected"
 end
 
+function startDialogueTest(index)
+  local item = dialogueScripts.tests[index]
+  if not item then return false end
+  storyDialogueScene.start(item.script)
+  dialogueTestPanelOpen = false
+  gameScene = "dialogue"
+  return true
+end
+
+function dialogueTestButtonRect()
+  local _, screenH = love.graphics.getDimensions()
+  return 18, screenH - 58, 178, 40
+end
+
+function dialogueTestPanelRect()
+  local w = 360
+  local h = 54 + #dialogueScripts.tests * 38
+  local bx, by = dialogueTestButtonRect()
+  return bx, by - h - 10, w, h
+end
+
+function dialogueTestButtonHit(mx, my)
+  local x, y, w, h = dialogueTestButtonRect()
+  return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+function dialogueTestPanelHit(mx, my)
+  if not dialogueTestPanelOpen then return nil end
+  local x, y, w = dialogueTestPanelRect()
+  for i = 1, #dialogueScripts.tests do
+    local iy = y + 42 + (i - 1) * 38
+    if mx >= x + 14 and mx <= x + w - 14 and my >= iy and my <= iy + 30 then return i end
+  end
+  return nil
+end
+
+function drawDialogueTestButton()
+  local x, y, w, h = dialogueTestButtonRect()
+  local mx, my = love.mouse.getPosition()
+  local hot = dialogueTestButtonHit(mx, my)
+  love.graphics.setColor(hot and colors.selected or colors.panel)
+  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+  love.graphics.setColor(dialogueTestPanelOpen and colors.hover or colors.grid)
+  love.graphics.setLineWidth(2)
+  love.graphics.rectangle("line", x, y, w, h, 6, 6)
+  love.graphics.setLineWidth(1)
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Dialogue Tests", x + 16, y + 12)
+end
+
+function drawDialogueTestPanel()
+  if not dialogueTestPanelOpen then return end
+  local x, y, w, h = dialogueTestPanelRect()
+  love.graphics.setColor(0, 0, 0, 0.88)
+  love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+  love.graphics.setColor(colors.hover)
+  love.graphics.setLineWidth(2)
+  love.graphics.rectangle("line", x, y, w, h, 6, 6)
+  love.graphics.setLineWidth(1)
+  love.graphics.setColor(colors.text)
+  love.graphics.print("Dialogue Tests", x + 16, y + 14)
+  local mx, my = love.mouse.getPosition()
+  local hit = dialogueTestPanelHit(mx, my)
+  for i, item in ipairs(dialogueScripts.tests) do
+    local iy = y + 42 + (i - 1) * 38
+    love.graphics.setColor(i == hit and colors.selected or colors.panel)
+    love.graphics.rectangle("fill", x + 14, iy, w - 28, 30, 4, 4)
+    love.graphics.setColor(colors.text)
+    love.graphics.print(i .. ". " .. item.label, x + 26, iy + 7)
+  end
+end
+
 function drawMapSelectScene()
   love.graphics.clear(colors.bg)
   local mx, my = love.mouse.getPosition()
@@ -1219,7 +1296,7 @@ function drawMapSelectScene()
   love.graphics.rectangle("fill", 14, 10, math.max(360, screenSize() - 28), hoverIndex and 122 or 72, 5, 5)
   love.graphics.setColor(colors.text)
   love.graphics.print("Map Select", 24, 24)
-  love.graphics.print("Left: choose area   Wheel: zoom   WASD: camera", 24, 50)
+  love.graphics.print("Left: choose area   Wheel: zoom   WASD: camera   O: dialogue tests", 24, 50)
   if hoverIndex then
     local area = mapAreas[hoverIndex]
     if area.enabled ~= false then
@@ -1229,6 +1306,8 @@ function drawMapSelectScene()
       love.graphics.print("Locked area", 24, 78)
     end
   end
+  drawDialogueTestPanel()
+  drawDialogueTestButton()
 end
 
 local function drawTileIcon(tile, x, y, size)
@@ -2495,12 +2574,45 @@ end
 local function playNextBgm()
   if not (love.audio and love.audio.newSource) then return end
   pcall(function()
+    bgmFade = nil
     bgmIndex = bgmIndex % #bgmTracks + 1
     bgm = love.audio.newSource(bgmTracks[bgmIndex], "stream")
     bgm:setLooping(false)
     bgm:setVolume(0.45)
     bgm:play()
   end)
+end
+
+function playBgm(path, volume, loop)
+  if not (love.audio and love.audio.newSource) then return end
+  pcall(function()
+    if bgm then bgm:stop() end
+    bgmFade = nil
+    bgm = love.audio.newSource(path, "stream")
+    bgm:setLooping(loop == true)
+    bgm:setVolume(volume or 0.45)
+    bgm:play()
+  end)
+end
+
+function applyBgmCue(cue)
+  if not cue then return end
+  if cue.action == "play" and cue.path then playBgm(cue.path, cue.volume, cue.loop); return end
+  if cue.action == "stop" and bgm then bgm:stop(); bgmFade = nil; return end
+  if cue.action == "fade" and bgm then
+    bgmFade = { time = 0, duration = cue.duration or 1, from = bgm:getVolume(), to = cue.to or 0, stop = cue.stop }
+  end
+end
+
+function updateBgmFade(dt)
+  if not (bgm and bgmFade) then return end
+  bgmFade.time = math.min(bgmFade.duration, bgmFade.time + dt)
+  local t = bgmFade.duration > 0 and bgmFade.time / bgmFade.duration or 1
+  bgm:setVolume(bgmFade.from + (bgmFade.to - bgmFade.from) * t)
+  if t >= 1 then
+    if bgmFade.stop then bgm:stop() end
+    bgmFade = nil
+  end
 end
 
 local function loadSfx()
@@ -2547,7 +2659,7 @@ end
 function love.load()
   math.randomseed(os.time())
   uiFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 13)
-  dialogFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 16)
+  dialogFont = love.graphics.newFont("assets/fonts/SeoulCyberUnivercity_EB.ttf", 21)
   love.graphics.setFont(uiFont)
   if love.graphics.newImage then
     portraits.nitori = love.graphics.newImage("assets/Images/Nitori.png")
@@ -2557,7 +2669,20 @@ function love.load()
     portraits.rumia = love.graphics.newImage("assets/Images/Rumia.png")
     portraits.blind = love.graphics.newImage("assets/Images/Blind.png")
     icons.lock = love.graphics.newImage("assets/Images/Icon/Lock.png")
+    backgrounds.youkaiMountain = love.graphics.newImage("assets/Images/Background/YoukaiMountain.jpg")
   end
+  storyDialogueScene.configure({
+    portraits = portraits,
+    backgrounds = backgrounds,
+    colors = colors,
+    font = function() return dialogFont end,
+    time = function() return simTime end,
+    playSfx = playSfx,
+    bgm = applyBgmCue,
+    skipDown = function() return love.keyboard.isDown("lctrl") or love.keyboard.isDown("rctrl") end,
+    close = function() gameScene = "map" end,
+  })
+  storyDialogueScene.loadPortraitPcg()
   loadSfx()
   playNextBgm()
   selected, editorSelected, placementRotation, paused, debug, unlimitedStock = 1, 1, 0, false, true, false
@@ -2566,8 +2691,13 @@ end
 
 function love.update(dt)
   simTime = simTime + dt
-  if bgm and not bgm:isPlaying() then playNextBgm() end
+  if bgm and not bgm:isPlaying() and gameScene ~= "dialogue" then playNextBgm() end
+  updateBgmFade(dt)
   updateSfx()
+  if gameScene == "dialogue" then
+    storyDialogueScene.update(dt)
+    return
+  end
   local move = cameraSpeed * dt
   if love.keyboard.isDown("a") then cameraX = cameraX + move end
   if love.keyboard.isDown("d") then cameraX = cameraX - move end
@@ -2688,6 +2818,7 @@ local function drawEditorSizingOverlay()
 end
 
 function love.draw()
+  if gameScene == "dialogue" then storyDialogueScene.draw(); return end
   if gameScene == "map" then drawMapSelectScene(); return end
 
   love.graphics.clear(colors.bg)
@@ -2803,8 +2934,12 @@ function releaseBoardDrag(mx, my)
 end
 
 function love.mousepressed(mx, my, button)
+  if gameScene == "dialogue" then return end
   if gameScene == "map" then
     if button == 1 then
+      if dialogueTestButtonHit(mx, my) then dialogueTestPanelOpen = not dialogueTestPanelOpen; return end
+      local dialogueTest = dialogueTestPanelHit(mx, my)
+      if dialogueTest then startDialogueTest(dialogueTest); return end
       local _, area = mapAreaAt(mx, my)
       if area then selectMapArea(area) end
     end
@@ -2849,8 +2984,16 @@ function love.mousemoved(mx, my)
 end
 
 function love.keypressed(k)
+  if gameScene == "dialogue" then
+    storyDialogueScene.keypressed(k)
+    return
+  end
   if gameScene == "map" then
+    if k == "o" then dialogueTestPanelOpen = not dialogueTestPanelOpen; return end
     local numberKey = tonumber(k)
+    if dialogueTestPanelOpen and numberKey then
+      if startDialogueTest(numberKey) then return end
+    end
     if numberKey and mapAreas[numberKey] then selectMapArea(mapAreas[numberKey]) end
     return
   end
