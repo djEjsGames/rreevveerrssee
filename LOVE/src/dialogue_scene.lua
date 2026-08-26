@@ -73,6 +73,10 @@ function M.keypressed(k)
   end
 end
 
+function M.mousepressed(_, _, button)
+  if button == 1 then dialogue.next(api()) end
+end
+
 local function colors()
   return env.colors or {
     text = { 0.9, 0.92, 0.88 },

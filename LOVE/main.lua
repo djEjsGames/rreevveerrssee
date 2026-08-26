@@ -2934,7 +2934,7 @@ function releaseBoardDrag(mx, my)
 end
 
 function love.mousepressed(mx, my, button)
-  if gameScene == "dialogue" then return end
+  if gameScene == "dialogue" then storyDialogueScene.mousepressed(mx, my, button); return end
   if gameScene == "map" then
     if button == 1 then
       if dialogueTestButtonHit(mx, my) then dialogueTestPanelOpen = not dialogueTestPanelOpen; return end
